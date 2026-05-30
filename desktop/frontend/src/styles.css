@@ -890,6 +890,15 @@ body {
 .statusbar__activity {
   color: var(--accent);
 }
+.statusbar__cache {
+  color: var(--fg-dim);
+}
+.statusbar__balance {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--fg-dim);
+}
 .statusbar__cwd {
   --wails-draggable: no-drag;
   display: inline-flex;

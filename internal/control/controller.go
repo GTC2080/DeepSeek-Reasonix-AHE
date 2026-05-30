@@ -19,6 +19,7 @@ import (
 	"sync"
 
 	"reasonix/internal/agent"
+	"reasonix/internal/billing"
 	"reasonix/internal/command"
 	"reasonix/internal/config"
 	"reasonix/internal/event"
@@ -44,6 +45,12 @@ type Controller struct {
 	commands     []command.Command
 	mem          *memory.Set
 	cleanup      func()
+
+	// balanceURL/balanceKey target the active provider's optional wallet-balance
+	// endpoint (empty when the provider declares none). Captured at build so a
+	// model/key switch — which rebuilds the controller — refreshes them.
+	balanceURL string
+	balanceKey string
 
 	// reg is the live tool registry the executor reads each turn; pluginCtx is the
 	// session-scoped context a hot-added stdio server binds its subprocess to.
@@ -105,6 +112,10 @@ type Options struct {
 	Commands     []command.Command
 	Memory       *memory.Set
 	Cleanup      func()
+	// BalanceURL/BalanceKey wire the active provider's optional wallet-balance
+	// endpoint and bearer key; empty when the provider declares no balance_url.
+	BalanceURL string
+	BalanceKey string
 	// Registry is the executor's live tool set, and PluginCtx the session-scoped
 	// context; both are needed for hot-adding MCP servers via AddMCPServer.
 	Registry  *tool.Registry
@@ -134,6 +145,8 @@ func New(opts Options) *Controller {
 		commands:     opts.Commands,
 		mem:          opts.Memory,
 		cleanup:      opts.Cleanup,
+		balanceURL:   opts.BalanceURL,
+		balanceKey:   opts.BalanceKey,
 		reg:          opts.Registry,
 		pluginCtx:    pluginCtx,
 		approvals:    map[string]chan approvalReply{},
@@ -517,6 +530,25 @@ func (c *Controller) ContextSnapshot() (int, int) {
 		return 0, c.executor.ContextWindow()
 	}
 	return u.PromptTokens, c.executor.ContextWindow()
+}
+
+// LastUsage returns the most recent turn's token telemetry (nil before the first
+// turn), so frontends can derive the prompt cache-hit rate for the status line.
+func (c *Controller) LastUsage() *provider.Usage {
+	if c.executor == nil {
+		return nil
+	}
+	return c.executor.LastUsage()
+}
+
+// Balance queries the active provider's wallet balance, or (nil, nil) when the
+// provider declares no balance_url — so a caller treats "not configured" and
+// "fetched" the same and just omits the readout when nil.
+func (c *Controller) Balance(ctx context.Context) (*billing.Balance, error) {
+	if strings.TrimSpace(c.balanceURL) == "" {
+		return nil, nil
+	}
+	return billing.Fetch(ctx, c.balanceURL, c.balanceKey)
 }
 
 // Host returns the running MCP host (nil when no plugins), for frontends that

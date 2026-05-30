@@ -8,6 +8,7 @@
 import { useCallback, useEffect, useReducer, useRef } from "react";
 import { app, onEvent } from "./bridge";
 import type {
+  BalanceInfo,
   ContextInfo,
   HistoryMessage,
   MemoryView,
@@ -48,6 +49,9 @@ interface State {
   usage?: WireUsage;
   context: ContextInfo;
   meta?: Meta;
+  // balance is the active provider's wallet readout, refreshed on mount and after
+  // each turn; undefined until first fetched, available:false when not configured.
+  balance?: BalanceInfo;
   // currentAssistant tracks the in-flight assistant item that text/reasoning
   // deltas accumulate into; cleared at turn boundaries.
   currentAssistant?: string;
@@ -84,6 +88,7 @@ type Action =
   | { type: "unsend" }
   | { type: "meta"; meta: Meta }
   | { type: "context"; context: ContextInfo }
+  | { type: "balance"; balance: BalanceInfo }
   | { type: "history"; messages: HistoryMessage[] }
   | { type: "clearApproval" }
   | { type: "clearAsk" }
@@ -286,6 +291,8 @@ function reducer(s: State, a: Action): State {
       return { ...s, meta: a.meta };
     case "context":
       return { ...s, context: a.context };
+    case "balance":
+      return { ...s, balance: a.balance };
     case "history": {
       // Only user/assistant turns with visible text — never the system prompt or
       // tool-result messages, and not the empty content of a tool-call-only turn.
@@ -321,11 +328,16 @@ export function useController() {
     const off = onEvent((e) => {
       dispatch({ type: "event", e });
       // The gauge's denominator (window) and post-turn prompt size come from the
-      // kernel, not the stream — refresh once a turn settles.
+      // kernel, not the stream — refresh once a turn settles. The wallet balance
+      // moves with spend, so refresh it on the same boundary.
       if (e.kind === "turn_done") {
         app
           .ContextUsage()
           .then((context) => dispatch({ type: "context", context }))
+          .catch(() => {});
+        app
+          .Balance()
+          .then((balance) => dispatch({ type: "balance", balance }))
           .catch(() => {});
       }
     });
@@ -341,6 +353,13 @@ export function useController() {
         // startupErr surfaces the reason once it's reachable.
       }
     })();
+
+    // Wallet balance is a network call — fetch it independently so it never delays
+    // the transcript/meta load (and is a no-op readout when not configured).
+    app
+      .Balance()
+      .then((balance) => dispatch({ type: "balance", balance }))
+      .catch(() => {});
 
     return off;
   }, []);

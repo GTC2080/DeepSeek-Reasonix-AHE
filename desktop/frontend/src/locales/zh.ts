@@ -51,6 +51,8 @@ export const zh: Record<DictKey, string> = {
   "status.noModels": "未配置任何模型",
   "status.switchFolder": "{cwd}\n点击切换项目目录",
   "status.tokens": "tokens",
+  "status.cache": "缓存 {pct}%",
+  "status.balanceTitle": "钱包余额",
 
   // 审批弹窗
   "approval.planTitle": "可以开始写代码了吗？",
@@ -109,6 +111,9 @@ export const zh: Record<DictKey, string> = {
   "settings.providerBaseUrl": "base_url（https://…）",
   "settings.providerModels": "模型（逗号分隔）",
   "settings.providerApiKeyEnv": "api_key_env（如 DEEPSEEK_API_KEY）",
+  "settings.providerBalanceUrl": "余额查询 URL（可选）",
+  "settings.balanceUrlPlaceholder": "余额查询接口（如 https://api.deepseek.com/user/balance）",
+  "settings.balanceUrlHint": "可选。填了就会查询并在状态栏显示钱包余额。",
   "settings.providerContextWindow": "上下文窗口",
   "settings.contextWindowPlaceholder": "token 数（0 = Provider 默认值）",
   "settings.contextWindowHint": "该 Provider 在上下文中保留的最大 token 数。填 0 表示使用 Provider 默认值。",

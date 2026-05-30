@@ -1,8 +1,19 @@
 import { useEffect, useState } from "react";
-import { FolderGit2 } from "lucide-react";
+import { FolderGit2, Wallet } from "lucide-react";
 import { ModelSwitcher } from "./ModelSwitcher";
 import { SPINNER_WORDS, useI18n } from "../lib/i18n";
-import type { ContextInfo, Meta } from "../lib/types";
+import type { BalanceInfo, ContextInfo, Meta, WireUsage } from "../lib/types";
+
+// cacheRate is the prompt cache-hit percentage from the last turn's usage, or
+// null when there's nothing to show. Mirrors the kernel's cached/new accounting:
+// prefer hit/(hit+miss), falling back to hit/prompt when only hits are reported.
+function cacheRate(u?: WireUsage): number | null {
+  if (!u) return null;
+  let denom = u.cacheHitTokens + u.cacheMissTokens;
+  if (denom === 0) denom = u.promptTokens;
+  if (denom <= 0) return null;
+  return Math.round((u.cacheHitTokens / denom) * 100);
+}
 
 // shortCwd trims a path to its last two segments so the status line stays compact
 // (e.g. /Users/x/projects/reasonix → …/projects/reasonix).
@@ -37,6 +48,8 @@ function useTick(on: boolean): number {
 export function StatusBar({
   meta,
   context,
+  usage,
+  balance,
   running,
   plan,
   turnStartAt,
@@ -46,6 +59,8 @@ export function StatusBar({
 }: {
   meta?: Meta;
   context: ContextInfo;
+  usage?: WireUsage;
+  balance?: BalanceInfo;
   running: boolean;
   plan: boolean;
   turnStartAt: number;
@@ -56,6 +71,7 @@ export function StatusBar({
   const { t, locale } = useI18n();
   const now = useTick(running);
   const pct = context.window ? Math.min(100, Math.round((context.used / context.window) * 100)) : null;
+  const cachePct = cacheRate(usage);
 
   // While a turn runs, the status line shows live activity (word · elapsed ·
   // tokens) in place of the static context gauge.
@@ -84,6 +100,21 @@ export function StatusBar({
             <span className="statusbar__ctx">{t("status.ctx", { pct })}</span>
           </>
         )
+      )}
+      {cachePct !== null && (
+        <>
+          <span className="statusbar__sep">·</span>
+          <span className="statusbar__cache">{t("status.cache", { pct: cachePct })}</span>
+        </>
+      )}
+      {balance?.available && balance.display && (
+        <>
+          <span className="statusbar__sep">·</span>
+          <span className="statusbar__balance" title={t("status.balanceTitle")}>
+            <Wallet size={11} />
+            {balance.display}
+          </span>
+        </>
       )}
       {meta?.cwd && (
         <>

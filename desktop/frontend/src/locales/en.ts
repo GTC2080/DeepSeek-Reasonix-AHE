@@ -50,6 +50,8 @@ export const en = {
   "status.noModels": "no models configured",
   "status.switchFolder": "{cwd}\nClick to switch project folder",
   "status.tokens": "tokens",
+  "status.cache": "cache {pct}%",
+  "status.balanceTitle": "Wallet balance",
 
   // approval modal
   "approval.planTitle": "Ready to start coding?",
@@ -108,6 +110,9 @@ export const en = {
   "settings.providerBaseUrl": "base_url (https://…)",
   "settings.providerModels": "models (comma-separated)",
   "settings.providerApiKeyEnv": "api_key_env (e.g. DEEPSEEK_API_KEY)",
+  "settings.providerBalanceUrl": "Balance URL (optional)",
+  "settings.balanceUrlPlaceholder": "balance endpoint (e.g. https://api.deepseek.com/user/balance)",
+  "settings.balanceUrlHint": "Optional. If set, the wallet balance is queried and shown in the status bar.",
   "settings.providerContextWindow": "Context window",
   "settings.contextWindowPlaceholder": "tokens (0 = provider default)",
   "settings.contextWindowHint": "Max tokens to keep in context for this provider. Leave 0 to use the provider's default.",

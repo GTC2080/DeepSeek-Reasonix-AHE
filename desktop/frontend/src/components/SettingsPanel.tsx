@@ -217,6 +217,7 @@ function ProviderEditor({
   const [baseUrl, setBaseUrl] = useState(initial?.baseUrl ?? "");
   const [models, setModels] = useState((initial?.models ?? []).join(", "));
   const [apiKeyEnv, setApiKeyEnv] = useState(initial?.apiKeyEnv ?? "");
+  const [balanceUrl, setBalanceUrl] = useState(initial?.balanceUrl ?? "");
   // Empty when unset so the placeholder (and its "0 = default" hint) reads instead
   // of a bare "0"; saved back as 0.
   const [ctx, setCtx] = useState(initial?.contextWindow ? String(initial.contextWindow) : "");
@@ -238,6 +239,7 @@ function ProviderEditor({
       default: ms[0] ?? "",
       apiKeyEnv: apiKeyEnv.trim(),
       keySet: initial?.keySet ?? false,
+      balanceUrl: balanceUrl.trim(),
       contextWindow: Number(ctx) || 0,
     });
   };
@@ -256,6 +258,9 @@ function ProviderEditor({
       <input className="mem-input" placeholder={t("settings.providerBaseUrl")} value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} />
       <input className="mem-input" placeholder={t("settings.providerModels")} value={models} onChange={(e) => setModels(e.target.value)} />
       <input className="mem-input" placeholder={t("settings.providerApiKeyEnv")} value={apiKeyEnv} onChange={(e) => setApiKeyEnv(e.target.value)} />
+      <label className="set-label">{t("settings.providerBalanceUrl")}</label>
+      <input className="mem-input" placeholder={t("settings.balanceUrlPlaceholder")} value={balanceUrl} onChange={(e) => setBalanceUrl(e.target.value)} />
+      <div className="mem-hint">{t("settings.balanceUrlHint")}</div>
       <label className="set-label">{t("settings.providerContextWindow")}</label>
       <input className="mem-input" placeholder={t("settings.contextWindowPlaceholder")} value={ctx} onChange={(e) => setCtx(e.target.value)} inputMode="numeric" />
       <div className="mem-hint">{t("settings.contextWindowHint")}</div>

@@ -182,6 +182,8 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		Commands:     cmds,
 		Memory:       mem,
 		Cleanup:      cleanup,
+		BalanceURL:   entry.BalanceURL,
+		BalanceKey:   entry.APIKey(),
 		Registry:     reg,
 		PluginCtx:    ctx,
 	}), nil

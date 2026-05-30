@@ -53,6 +53,12 @@ type chatTUI struct {
 	// events) for the live "↓N" readout in the running status line.
 	turnTokens int
 
+	// balance is the last-fetched wallet-balance readout (e.g. "¥110.00"), "" when
+	// the provider declares no balance_url or a fetch failed. Refreshed async on
+	// startup and after each turn so the status line stays roughly current without
+	// blocking the event loop.
+	balance string
+
 	// todoArgs is the latest todo_write call's raw args; it drives the task list
 	// pinned just above the input (see renderTodoPanel). "" when there's no list.
 	// Persists across turns until the work completes or a new session starts.
@@ -127,6 +133,23 @@ type agentEventMsg event.Event
 // Ns" counter in the status line.
 type elapsedTickMsg struct{}
 
+// balanceMsg carries the result of an async wallet-balance fetch; text is the
+// formatted readout ("" when none/failed).
+type balanceMsg struct{ text string }
+
+// fetchBalance queries the provider's wallet balance off the event loop. It's a
+// no-op readout ("") when the provider declares no balance_url or the fetch
+// fails, so the status line stays quiet rather than surfacing an error.
+func fetchBalance(ctrl *control.Controller) tea.Cmd {
+	return func() tea.Msg {
+		b, err := ctrl.Balance(context.Background())
+		if err != nil || b == nil {
+			return balanceMsg{}
+		}
+		return balanceMsg{text: b.Display()}
+	}
+}
+
 // promptResolvedMsg carries the result of fetching an MCP prompt (an async
 // prompts/get). display is the command line echoed as the user bubble; sent is
 // the rendered prompt text that becomes the model turn.
@@ -196,6 +219,7 @@ func (m chatTUI) Init() tea.Cmd {
 	return tea.Batch(
 		textarea.Blink,
 		waitForAgentEvent(m.eventCh),
+		fetchBalance(m.ctrl),
 	)
 }
 
@@ -372,6 +396,13 @@ func (m chatTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case agentEventMsg:
 		m.ingestEvent(event.Event(msg))
 		cmds = append(cmds, waitForAgentEvent(m.eventCh))
+		// A turn just spent tokens (and money) — refresh the balance readout.
+		if event.Event(msg).Kind == event.TurnDone {
+			cmds = append(cmds, fetchBalance(m.ctrl))
+		}
+
+	case balanceMsg:
+		m.balance = msg.text
 
 	case promptResolvedMsg:
 		switch {
@@ -652,6 +683,12 @@ func (m chatTUI) View() tea.View {
 	if ctxTag != "" {
 		status += " · " + ctxTag
 	}
+	if cache := m.cacheTag(); cache != "" {
+		status += " · " + cache
+	}
+	if m.balance != "" {
+		status += " · " + dim(m.balance)
+	}
 
 	// The bottom region must stay a stable height: bubbletea's non-alt-screen
 	// renderer commits scrollback via tea.Println by clearing the previous
@@ -714,6 +751,24 @@ func (m chatTUI) contextTag() string {
 	default:
 		return dim(body)
 	}
+}
+
+// cacheTag renders the prompt cache-hit rate for the status line from the last
+// turn's usage — "cache 82%". "" before any turn or when no prompt tokens were
+// reported. Falls back to prompt-token-relative when only hits are reported.
+func (m chatTUI) cacheTag() string {
+	u := m.ctrl.LastUsage()
+	if u == nil {
+		return ""
+	}
+	denom := u.CacheHitTokens + u.CacheMissTokens
+	if denom == 0 {
+		denom = u.PromptTokens
+	}
+	if denom == 0 {
+		return ""
+	}
+	return dim(fmt.Sprintf("cache %d%%", u.CacheHitTokens*100/denom))
 }
 
 // shortTokens prints token counts compactly: 142_000 → "142K", 1_000_000 → "1M".

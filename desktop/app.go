@@ -318,6 +318,34 @@ func (a *App) ContextUsage() ContextInfo {
 	return ContextInfo{Used: used, Window: window}
 }
 
+// BalanceInfo is the wallet-balance readout for the status bar. Available is true
+// only when a balance was fetched; Display is the formatted amount (e.g. "¥110.00")
+// and is "" when the active provider declares no balance_url — the frontend then
+// omits the readout. Err carries a fetch failure for an optional tooltip.
+type BalanceInfo struct {
+	Available bool   `json:"available"`
+	Display   string `json:"display"`
+	Err       string `json:"err,omitempty"`
+}
+
+// Balance queries the active provider's wallet balance (a network call). It
+// returns an empty (unavailable) readout when no provider balance_url is set, the
+// controller is down, or the fetch fails — so the status bar simply shows nothing
+// rather than an error.
+func (a *App) Balance() BalanceInfo {
+	if a.ctrl == nil {
+		return BalanceInfo{}
+	}
+	b, err := a.ctrl.Balance(a.ctx)
+	if err != nil {
+		return BalanceInfo{Err: err.Error()}
+	}
+	if b == nil {
+		return BalanceInfo{} // provider declares no balance endpoint
+	}
+	return BalanceInfo{Available: true, Display: b.Display()}
+}
+
 // Meta describes the session for the frontend's header and status line.
 type Meta struct {
 	Label        string `json:"label"`

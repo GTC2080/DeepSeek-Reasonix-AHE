@@ -102,6 +102,7 @@ type ProviderEntry struct {
 	Models        []string          `toml:"models"`  // a vendor's model list (one base_url/key, many models)
 	Default       string            `toml:"default"` // default model when Models is set (else Models[0])
 	APIKeyEnv     string            `toml:"api_key_env"`
+	BalanceURL    string            `toml:"balance_url"` // optional; a provider-specific wallet-balance endpoint (DeepSeek: https://api.deepseek.com/user/balance). Empty = no balance readout.
 	ContextWindow int               `toml:"context_window"`
 	Price         *provider.Pricing `toml:"price"`
 }
@@ -212,8 +213,8 @@ func Default() *Config {
 		// wrongly deny it).
 		Sandbox: SandboxConfig{Bash: "enforce", Network: true},
 		Providers: []ProviderEntry{
-			{Name: "deepseek-flash", Kind: "openai", BaseURL: "https://api.deepseek.com", Model: "deepseek-v4-flash", APIKeyEnv: "DEEPSEEK_API_KEY", ContextWindow: 1_000_000, Price: &provider.Pricing{CacheHit: 0.02, Input: 1, Output: 2, Currency: "¥"}},
-			{Name: "deepseek-pro", Kind: "openai", BaseURL: "https://api.deepseek.com", Model: "deepseek-v4-pro", APIKeyEnv: "DEEPSEEK_API_KEY", ContextWindow: 1_000_000, Price: &provider.Pricing{CacheHit: 0.025, Input: 3, Output: 6, Currency: "¥"}},
+			{Name: "deepseek-flash", Kind: "openai", BaseURL: "https://api.deepseek.com", Model: "deepseek-v4-flash", APIKeyEnv: "DEEPSEEK_API_KEY", BalanceURL: "https://api.deepseek.com/user/balance", ContextWindow: 1_000_000, Price: &provider.Pricing{CacheHit: 0.02, Input: 1, Output: 2, Currency: "¥"}},
+			{Name: "deepseek-pro", Kind: "openai", BaseURL: "https://api.deepseek.com", Model: "deepseek-v4-pro", APIKeyEnv: "DEEPSEEK_API_KEY", BalanceURL: "https://api.deepseek.com/user/balance", ContextWindow: 1_000_000, Price: &provider.Pricing{CacheHit: 0.025, Input: 3, Output: 6, Currency: "¥"}},
 			{Name: "mimo-pro", Kind: "openai", BaseURL: "https://api.xiaomimimo.com/v1", Model: "mimo-v2.5-pro", APIKeyEnv: "MIMO_API_KEY", ContextWindow: 1_000_000},
 			{Name: "mimo-flash", Kind: "openai", BaseURL: "https://api.xiaomimimo.com/v1", Model: "mimo-v2-flash", APIKeyEnv: "MIMO_API_KEY", ContextWindow: 65_536},
 		},

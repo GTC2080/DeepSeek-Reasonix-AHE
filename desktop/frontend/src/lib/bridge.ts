@@ -6,6 +6,7 @@
 // developed and laid out without rebuilding the Go side.
 
 import type {
+  BalanceInfo,
   CommandInfo,
   ContextInfo,
   DirEntry,
@@ -41,6 +42,9 @@ export interface AppBindings {
   // returns the chosen path, or "" if cancelled.
   PickWorkspace(): Promise<string>;
   ContextUsage(): Promise<ContextInfo>;
+  // Balance queries the active provider's wallet balance (a network call);
+  // returns an unavailable readout when no balance_url is configured or it fails.
+  Balance(): Promise<BalanceInfo>;
   Meta(): Promise<Meta>;
   Commands(): Promise<CommandInfo[]>;
   ListDir(rel: string): Promise<DirEntry[]>;
@@ -162,8 +166,8 @@ function makeMockApp(): AppBindings {
     defaultModel: "deepseek-flash",
     plannerModel: "",
     providers: [
-      { name: "deepseek-flash", kind: "openai", baseUrl: "https://api.deepseek.com", models: ["deepseek-v4-flash"], default: "deepseek-v4-flash", apiKeyEnv: "DEEPSEEK_API_KEY", keySet: true, contextWindow: 1_000_000 },
-      { name: "mimo-pro", kind: "openai", baseUrl: "https://api.xiaomimimo.com/v1", models: ["mimo-v2.5-pro"], default: "mimo-v2.5-pro", apiKeyEnv: "MIMO_API_KEY", keySet: false, contextWindow: 1_000_000 },
+      { name: "deepseek-flash", kind: "openai", baseUrl: "https://api.deepseek.com", models: ["deepseek-v4-flash"], default: "deepseek-v4-flash", apiKeyEnv: "DEEPSEEK_API_KEY", keySet: true, balanceUrl: "https://api.deepseek.com/user/balance", contextWindow: 1_000_000 },
+      { name: "mimo-pro", kind: "openai", baseUrl: "https://api.xiaomimimo.com/v1", models: ["mimo-v2.5-pro"], default: "mimo-v2.5-pro", apiKeyEnv: "MIMO_API_KEY", keySet: false, balanceUrl: "", contextWindow: 1_000_000 },
     ],
     permissions: { mode: "ask", allow: ["ls", "read_file"], ask: [], deny: ["bash(rm *)"] },
     sandbox: { bash: "enforce", network: true, workspaceRoot: "", allowWrite: [] },
@@ -255,6 +259,12 @@ function makeMockApp(): AppBindings {
     },
     async ContextUsage() {
       return { used: 1280, window: 1_000_000 };
+    },
+    async Balance() {
+      // Mirror the active mock provider: deepseek-flash carries a balance_url.
+      const p = settings.providers.find((x) => x.name === settings.defaultModel);
+      if (!p?.balanceUrl) return { available: false, display: "" };
+      return { available: true, display: "¥128.50" };
     },
     async Meta() {
       return {

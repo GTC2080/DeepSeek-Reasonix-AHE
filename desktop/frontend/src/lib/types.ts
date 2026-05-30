@@ -163,7 +163,17 @@ export interface ProviderView {
   default: string;
   apiKeyEnv: string;
   keySet: boolean; // the env var currently resolves to a value
+  balanceUrl: string; // optional wallet-balance endpoint; "" disables the readout
   contextWindow: number;
+}
+
+// BalanceInfo is the wallet-balance readout (desktop/app.go Balance). available
+// is false when the provider declares no balanceUrl or a fetch failed; display is
+// the formatted amount (e.g. "¥110.00").
+export interface BalanceInfo {
+  available: boolean;
+  display: string;
+  err?: string;
 }
 
 export interface PermissionsView {

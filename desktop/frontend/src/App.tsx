@@ -180,6 +180,8 @@ export default function App() {
         <StatusBar
           meta={state.meta}
           context={state.context}
+          usage={state.usage}
+          balance={state.balance}
           running={state.running}
           plan={plan}
           turnStartAt={state.turnStartAt}

@@ -428,11 +428,83 @@ func (m chatTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // Update) and batches it with the turn's other commands.
 func finalize(m chatTUI, cmds []tea.Cmd) tea.Cmd {
 	if len(*m.pendingCommit) > 0 {
-		out := strings.Join(*m.pendingCommit, "\n")
+		out := strings.TrimRight(clampWidth(strings.Join(*m.pendingCommit, "\n"), m.width), "\n")
 		*m.pendingCommit = (*m.pendingCommit)[:0]
-		cmds = append(cmds, tea.Println(strings.TrimRight(out, "\n")))
+		// Commit in screen-bounded chunks. v2's inline renderer commits scrollback
+		// via insertAbove, which scrolls the screen and InsertLine()s by the
+		// block's line count; a single block taller than the screen makes its
+		// CursorUp clamp at the top and the inserts misalign — the whole frame
+		// (input box, banner) corrupts. Splitting so each Println is at most a
+		// screenful keeps insertAbove within bounds. Sequence preserves order
+		// (Batch does not across multiple Printlns).
+		var prints []tea.Cmd
+		for _, chunk := range chunkLines(out, m.scrollChunkHeight()) {
+			prints = append(prints, tea.Println(chunk))
+		}
+		cmds = append(cmds, tea.Sequence(prints...))
 	}
 	return tea.Batch(cmds...)
+}
+
+// scrollChunkHeight is the largest block (in lines) finalize prints at once so
+// v2's insertAbove stays within the screen. It leaves room for the pinned
+// bottom frame (input box + status). Falls back to a generous default before
+// the first WindowSizeMsg sets the height.
+func (m chatTUI) scrollChunkHeight() int {
+	if m.height <= 0 {
+		return 100
+	}
+	if n := m.height - 5; n > 1 {
+		return n
+	}
+	return 1
+}
+
+// chunkLines splits s into blocks of at most n lines each, preserving order and
+// line content. A single block is returned when it already fits.
+func chunkLines(s string, n int) []string {
+	if n < 1 {
+		n = 1
+	}
+	lines := strings.Split(s, "\n")
+	if len(lines) <= n {
+		return []string{s}
+	}
+	var out []string
+	for i := 0; i < len(lines); i += n {
+		end := i + n
+		if end > len(lines) {
+			end = len(lines)
+		}
+		out = append(out, strings.Join(lines[i:end], "\n"))
+	}
+	return out
+}
+
+// clampWidth hard-breaks any line wider than width so no scrollback line wraps
+// in the terminal. bubbletea's inline renderer estimates how far to scroll for
+// each printed block from each line's width (insertAbove: offset += width/w); an
+// over-wide line that the terminal wraps throws that estimate off and drifts the
+// pinned input box off-screen. Lines already within width are left byte-for-byte
+// untouched (chunkByWidth preserves content and ANSI), so rendered tables and the
+// wrapped answer — which the markdown renderer already fit to width — are safe;
+// only stray long lines (tool-dispatch args, unwrapped code) get broken.
+func clampWidth(s string, width int) string {
+	if width <= 0 {
+		return s
+	}
+	var b strings.Builder
+	for i, line := range strings.Split(s, "\n") {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		if visibleWidth(line) > width {
+			b.WriteString(strings.Join(chunkByWidth(line, width), "\n"))
+		} else {
+			b.WriteString(line)
+		}
+	}
+	return b.String()
 }
 
 // commitLine queues one finalized block for the next scrollback flush.

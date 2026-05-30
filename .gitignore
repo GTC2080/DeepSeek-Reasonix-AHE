@@ -1,40 +1,18 @@
-# Go
-*.exe
-*.exe~
-*.dll
-*.so
-*.dylib
-*.test
-*.out
+# Build artifacts
 /bin/
 /dist/
-coverage.out
-coverage.html
-go.work
-go.work.sum
+/reasonix
 
-# Dependencies (uncomment if vendoring)
-# /vendor/
-
-# Desktop build artifacts
-/desktop/build/
-/desktop/dist/
-node_modules/
-
-# Environment / secrets
+# Environment / local config (reasonix.example.toml is the shared template)
 .env
-.env.*
-!.env.example
+.env.local
+/reasonix.toml
 
-# Reasonix runtime
-.reasonix/
-
-# Editors / IDE
+# Editor / OS
+.DS_Store
 .idea/
 .vscode/
-*.swp
-*~
 
-# OS
-.DS_Store
-Thumbs.db
+# Go
+*.test
+*.out

@@ -1,0 +1,57 @@
+# Reasonix configuration.
+# Resolution order: flag > ./reasonix.toml > ~/.config/reasonix/config.toml > built-in defaults.
+# Secrets come from the environment via api_key_env; never put keys here.
+
+default_model = "deepseek-flash"
+# language      = "zh"   # ui language; empty = auto-detect from $LANG / $REASONIX_LANG
+
+[agent]
+system_prompt = """
+You are Reasonix, a coding agent focused on executing code tasks.
+Use the provided tools to read and write files and run shell commands.
+Principles: understand the request before acting; verify with tools instead of
+guessing; keep changes minimal and correct; briefly summarize what you did."""
+# system_prompt_file = "prompts/system.md"   # overrides system_prompt when set
+max_steps   = 25
+temperature = 0.0
+# planner_model = "mimo-pro"   # optional: enable two-model collaboration
+
+[[providers]]
+name        = "deepseek-flash"
+kind        = "openai"
+base_url    = "https://api.deepseek.com"
+model       = "deepseek-v4-flash"
+api_key_env = "DEEPSEEK_API_KEY"
+price       = { cache_hit = 0.02, input = 1, output = 2, currency = "¥" }   # per 1M tokens
+
+[[providers]]
+name        = "deepseek-pro"
+kind        = "openai"
+base_url    = "https://api.deepseek.com"
+model       = "deepseek-v4-pro"
+api_key_env = "DEEPSEEK_API_KEY"
+price       = { cache_hit = 0.025, input = 3, output = 6, currency = "¥" }   # per 1M tokens
+
+[[providers]]
+name           = "mimo-pro"
+kind           = "openai"
+base_url       = "https://api.xiaomimimo.com/v1"
+model          = "mimo-v2.5-pro"   # thinking-mode on by default; reasoning_content rendered dim above the answer
+api_key_env    = "MIMO_API_KEY"
+context_window = 1000000
+
+[[providers]]
+name           = "mimo-flash"
+kind           = "openai"
+base_url       = "https://api.xiaomimimo.com/v1"
+model          = "mimo-v2-flash"   # thinking-mode off by default; cheaper / faster
+api_key_env    = "MIMO_API_KEY"
+context_window = 65536
+
+[tools]
+enabled = []   # empty = all built-in tools
+
+# External stdio plugins (MCP-compatible); each is a standalone executable.
+# [[plugins]]
+# name    = "example"
+# command = "reasonix-plugin-example"

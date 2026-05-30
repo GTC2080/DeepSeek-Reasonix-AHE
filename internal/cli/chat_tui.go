@@ -1,0 +1,1068 @@
+package cli
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"image/color"
+	"strings"
+	"sync"
+	"time"
+
+	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/spinner"
+	"charm.land/bubbles/v2/textarea"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+
+	"reasonix/internal/agent"
+	"reasonix/internal/command"
+	"reasonix/internal/i18n"
+	"reasonix/internal/plugin"
+	"reasonix/internal/provider"
+)
+
+// chatTUI is a bubbletea Model that runs a chat session in the terminal's
+// normal buffer (no alt-screen). Finalized output — user bubbles, tool dispatch
+// lines, usage lines, reasoning, and the rendered assistant answer — is
+// committed to the native scrollback via tea.Println, so the wheel, scrollbar,
+// and copy all work like any CLI. The bubbletea-managed region is only the
+// bottom — input box, status line, an optional approval/plan banner, and the
+// autocomplete menu — and it is kept a stable height (it changes only on
+// discrete user actions, never per streamed token) so the renderer commits
+// scrollback cleanly without stranding the input box's border lines. This
+// mirrors how Claude Code uses Ink's <Static> to freeze finished output into
+// scrollback while re-rendering just the active prompt.
+type chatTUI struct {
+	runner  agent.Runner
+	label   string
+	missing string // missing-key warning surfaced once in the banner, "" when ready
+
+	width  int
+	height int
+
+	input   textarea.Model
+	spinner spinner.Model
+
+	state    tuiState
+	runStart time.Time
+	elapsed  int
+	cancel   context.CancelFunc
+
+	// planMode mirrors the agent's read-only gate (Tab toggles it). The marker
+	// rides in outgoing user messages so the cache-stable prompt prefix is left
+	// untouched.
+	planMode bool
+	hooks    chatHooks
+
+	// turnAccumulator collects this turn's assistant free text so the plan-mode
+	// path can tell whether the turn produced a substantive proposal.
+	turnAccumulator *strings.Builder
+
+	// pendingPlan is non-empty while a plan-mode proposal awaits Enter-approval.
+	pendingPlan string
+
+	// history is a resumed session's messages, committed to scrollback once on
+	// the first WindowSizeMsg so a reopened chat shows its prior transcript.
+	history []provider.Message
+
+	// reasoning accumulates the in-progress thinking stream (dim); pending
+	// accumulates the in-progress answer (raw markdown). They are committed to
+	// scrollback (reasoning verbatim, answer markdown-rendered) when they
+	// finalize — at a tool/usage boundary or turn end — not previewed live, so
+	// the bottom region stays a stable height. pendingCommit queues finalized
+	// lines so a single Update emits exactly one ordered tea.Println.
+	reasoning     *strings.Builder
+	pending       *strings.Builder
+	pendingCommit *[]string
+	renderer      *mdRenderer
+	textCh        chan string
+	doneCh        chan error
+	started       bool // banner + resumed history committed once
+
+	// approvalCh delivers tool-call approval requests from the agent goroutine
+	// (sent by channelApprover). pendingApproval holds the one currently shown
+	// in the banner; nil means none is awaiting a decision. While set, the
+	// agent is blocked inside the gate and key input is captured to answer it.
+	approvalCh      chan approvalReq
+	pendingApproval *approvalReq
+
+	// host is the running MCP servers (nil when no plugins). The TUI reads
+	// prompts (slash commands), resources (@-references), and server status
+	// (/mcp) from it.
+	host *plugin.Host
+
+	// commands are custom slash commands loaded from .reasonix/commands; each renders
+	// its template with the typed args and sends the result as a turn.
+	commands []command.Command
+
+	// completion is the live autocomplete menu (slash commands; @-refs later).
+	completion completion
+}
+
+type tuiState int
+
+const (
+	tuiIdle tuiState = iota
+	tuiRunning
+)
+
+// agentTextMsg is one chunk of bytes the agent wrote to its output writer.
+type agentTextMsg string
+
+// agentDoneMsg signals that a single Run() call returned; err is non-nil when
+// the turn errored out (ctx cancellation surfaces as nil — not a user error).
+type agentDoneMsg struct{ err error }
+
+// elapsedTickMsg fires once a second while a turn runs, driving the "thinking
+// Ns" counter in the status line.
+type elapsedTickMsg struct{}
+
+// promptResolvedMsg carries the result of fetching an MCP prompt (an async
+// prompts/get). display is the command line echoed as the user bubble; sent is
+// the rendered prompt text that becomes the model turn.
+type promptResolvedMsg struct {
+	display string
+	sent    string
+	err     error
+}
+
+// refsResolvedMsg carries the result of resolving the @references in a
+// submitted line (async file reads / MCP resources/read).
+type refsResolvedMsg struct {
+	line  string
+	block string
+	errs  []string
+}
+
+// chatHooks bundles the CLI-side callbacks the TUI calls into.
+type chatHooks struct {
+	setPlanMode     func(bool)
+	save            func() error              // auto-save the executor's session
+	compact         func() error              // run one compaction pass on demand
+	newSession      func() error              // snapshot + fork a fresh session
+	contextSnapshot func() (used, window int) // for the prompt/context gauge
+}
+
+// newChatTUI assembles the initial model. The agent runner has already been
+// constructed with a writer that feeds textCh; the TUI owns the channels and
+// the UI state. history pre-populates scrollback from a resumed session.
+func newChatTUI(runner agent.Runner, label, missing string, textCh chan string, doneCh chan error, termW int, hooks chatHooks, history []provider.Message, approvalCh chan approvalReq, host *plugin.Host, commands []command.Command) chatTUI {
+	ti := textarea.New()
+	ti.Prompt = ""
+	ti.CharLimit = 16384
+	ti.SetHeight(1)
+	ti.ShowLineNumbers = false
+	// Use the real terminal cursor (not a styled virtual one) so View can place
+	// it at the insertion point and IME candidate windows anchor to the input.
+	ti.SetVirtualCursor(false)
+	// Plain Enter submits (the chatTUI handler intercepts it), so the textarea's
+	// own InsertNewline binding moves to Alt+Enter / Ctrl+J.
+	ti.KeyMap.InsertNewline = key.NewBinding(key.WithKeys("alt+enter", "ctrl+j"))
+	ti.Focus()
+
+	sp := spinner.New()
+	sp.Spinner = spinner.Dot
+	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("173"))
+
+	commitBuf := []string{}
+	return chatTUI{
+		runner:          runner,
+		label:           label,
+		missing:         missing,
+		input:           ti,
+		spinner:         sp,
+		reasoning:       &strings.Builder{},
+		pending:         &strings.Builder{},
+		pendingCommit:   &commitBuf,
+		turnAccumulator: &strings.Builder{},
+		renderer:        newMarkdownRenderer(termW),
+		textCh:          textCh,
+		doneCh:          doneCh,
+		hooks:           hooks,
+		history:         history,
+		approvalCh:      approvalCh,
+		host:            host,
+		commands:        commands,
+	}
+}
+
+// prompts returns the MCP prompts discovered at startup (nil when no plugins).
+func (m *chatTUI) prompts() []plugin.Prompt {
+	if m.host == nil {
+		return nil
+	}
+	return m.host.Prompts()
+}
+
+// planModeMarker is prepended to every user message while plan mode is on. It
+// is part of the user message (not the system prompt or tools), so the existing
+// cache prefix stays valid.
+const planModeMarker = "[Plan mode — read-only. Explore and propose; do not write files, edit, or run side-effecting bash. Read-only tools (read_file, ls, grep, glob, web_fetch, task) are available; writers are refused by the harness. End with a concrete plan the user can approve.]"
+
+func (m chatTUI) Init() tea.Cmd {
+	return tea.Batch(
+		textarea.Blink,
+		waitForAgentText(m.textCh),
+		waitForAgentDone(m.doneCh),
+		waitForApproval(m.approvalCh),
+	)
+}
+
+func (m chatTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmds []tea.Cmd
+
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+		m.input.SetWidth(msg.Width - 4)
+		m.renderer = newMarkdownRenderer(msg.Width)
+		// Commit the banner — and a resumed session's transcript — to scrollback
+		// once, now that the width is known.
+		if !m.started {
+			m.started = true
+			var b strings.Builder
+			b.WriteString(renderTUIBanner(m.label, m.missing, msg.Width))
+			if len(m.history) > 0 {
+				r := newMarkdownRenderer(msg.Width)
+				for _, sec := range replaySectionsFor(m.history, msg.Width, r) {
+					b.WriteString(sec)
+				}
+				m.history = nil
+			}
+			m.commitLine(strings.TrimRight(b.String(), "\n"))
+		}
+
+	case tea.KeyPressMsg:
+		// A pending tool approval is modal: keystrokes answer it (y/a/n, Enter,
+		// Esc) rather than reaching the input.
+		if m.pendingApproval != nil {
+			return m.handleApprovalKey(msg)
+		}
+		// While the autocomplete menu is open it captures navigation/accept keys
+		// (↑/↓ move, Tab/Enter accept, Esc close); everything else falls through
+		// to the textarea and re-filters the menu at the end of Update.
+		if m.completion.active {
+			switch msg.String() {
+			case "up":
+				m.moveCompletion(-1)
+				return m, nil
+			case "down":
+				m.moveCompletion(1)
+				return m, nil
+			case "tab", "enter":
+				m.acceptCompletion()
+				return m, nil
+			case "esc":
+				m.completion = completion{}
+				return m, nil
+			}
+		}
+		switch msg.String() {
+		case "esc":
+			// "Back out" of the most specific in-progress state: cancel a turn,
+			// turn plan mode off, or clear typed-but-unsent input. Scrollback is
+			// the terminal's now, so there's no viewport to dismiss.
+			switch {
+			case m.state == tuiRunning:
+				if m.cancel != nil {
+					m.cancel()
+				}
+			case m.pendingPlan != "":
+				m.pendingPlan = ""
+			case m.planMode:
+				m.planMode = false
+				if m.hooks.setPlanMode != nil {
+					m.hooks.setPlanMode(false)
+				}
+			default:
+				m.input.Reset()
+			}
+			return m, nil
+		case "ctrl+c":
+			if m.state == tuiRunning {
+				if m.cancel != nil {
+					m.cancel()
+				}
+				return m, nil
+			}
+			return m, tea.Quit
+		case "ctrl+d":
+			return m, tea.Quit
+		case "tab":
+			if m.state == tuiRunning {
+				break
+			}
+			m.planMode = !m.planMode
+			if m.hooks.setPlanMode != nil {
+				m.hooks.setPlanMode(m.planMode)
+			}
+			return m, nil
+		case "enter":
+			if m.state == tuiRunning {
+				return m, nil // ignore Enter while a turn is in flight
+			}
+			line := strings.TrimSpace(m.input.Value())
+
+			// Empty Enter while a plan is pending approves it and auto-sends a
+			// brief "proceed" message.
+			if line == "" && m.pendingPlan != "" {
+				m.pendingPlan = ""
+				m.planMode = false
+				if m.hooks.setPlanMode != nil {
+					m.hooks.setPlanMode(false)
+				}
+				cmds = append(cmds, m.startTurn("Plan approved — proceed with the steps you laid out, executing as needed.", "(plan approved — executing)"))
+				return m, finalize(m, cmds)
+			}
+
+			if line == "" {
+				return m, nil
+			}
+			if line == "exit" || line == "quit" || line == ":q" {
+				return m, tea.Quit
+			}
+
+			// Slash commands run locally without going through the model.
+			if strings.HasPrefix(line, "/") {
+				m.input.Reset()
+				m.input.SetHeight(1)
+				cmds = append(cmds, m.runSlashCommand(line))
+				return m, finalize(m, cmds)
+			}
+
+			// A non-empty submission while a plan is pending counts as feedback.
+			m.pendingPlan = ""
+			m.input.Reset()
+			m.input.SetHeight(1)
+
+			// @references (local files / MCP resources) are fetched off the event
+			// loop; the turn starts when they resolve (refsResolvedMsg).
+			if refs := m.detectRefs(line); len(refs) > 0 {
+				cmds = append(cmds, m.fetchRefs(line, refs))
+				return m, finalize(m, cmds)
+			}
+
+			cmds = append(cmds, m.startTurn(m.composeSent(line), line))
+			return m, finalize(m, cmds)
+		}
+
+	case agentTextMsg:
+		m.ingestChunk(string(msg))
+		cmds = append(cmds, waitForAgentText(m.textCh))
+
+	case agentDoneMsg:
+		// Finalize whatever's still streaming, then settle the turn.
+		m.commitReasoning()
+		m.commitPending()
+		m.state = tuiIdle
+		m.cancel = nil
+		if m.hooks.save != nil {
+			_ = m.hooks.save() // best-effort; never the user's problem mid-chat
+		}
+		if msg.err != nil && msg.err.Error() != "" && !strings.Contains(msg.err.Error(), "context canceled") {
+			m.commitLine(wrapForViewport(i18n.M.ErrorPrefix+" "+msg.err.Error(), m.width, lipgloss.Color("3")))
+		}
+		// A plan-mode turn that produced substantive text waits for approval.
+		if msg.err == nil && m.planMode && strings.TrimSpace(m.turnAccumulator.String()) != "" {
+			m.pendingPlan = "pending"
+		}
+		cmds = append(cmds, waitForAgentDone(m.doneCh))
+
+	case approvalReqMsg:
+		// The agent is now blocked inside the permission gate waiting for this
+		// decision; the banner shows in View. The listener re-arms only after the
+		// user answers (handleApprovalKey), so at most one prompt shows at once.
+		req := approvalReq(msg)
+		m.pendingApproval = &req
+
+	case promptResolvedMsg:
+		switch {
+		case msg.err != nil:
+			m.commitLine(wrapForViewport(i18n.M.ErrorPrefix+" "+msg.err.Error(), m.width, lipgloss.Color("3")))
+		case strings.TrimSpace(msg.sent) == "":
+			m.notice(i18n.M.SlashPromptEmpty)
+		default:
+			cmds = append(cmds, m.startTurn(m.composeSent(msg.sent), msg.display))
+		}
+
+	case refsResolvedMsg:
+		for _, e := range msg.errs {
+			m.notice(e) // surface a fetch failure but still send the turn
+		}
+		sent := msg.line
+		if msg.block != "" {
+			sent = "Referenced context:\n\n" + msg.block + "\n\n" + msg.line
+		}
+		cmds = append(cmds, m.startTurn(m.composeSent(sent), msg.line))
+
+	case elapsedTickMsg:
+		if m.state == tuiRunning {
+			m.elapsed = int(time.Since(m.runStart).Seconds())
+			cmds = append(cmds, elapsedTick())
+		}
+
+	case spinner.TickMsg:
+		if m.state == tuiRunning {
+			var cmd tea.Cmd
+			m.spinner, cmd = m.spinner.Update(msg)
+			cmds = append(cmds, cmd)
+		}
+	}
+
+	var ic tea.Cmd
+	m.input, ic = m.input.Update(msg)
+	cmds = append(cmds, ic)
+	m.growInputToFit()
+	// Re-filter the autocomplete menu against the freshly-edited input.
+	if _, ok := msg.(tea.KeyPressMsg); ok {
+		m.updateCompletion()
+	}
+
+	return m, finalize(m, cmds)
+}
+
+// finalize flushes any queued scrollback lines into a single ordered tea.Println
+// (Batch doesn't preserve order across multiple Println cmds, so we coalesce per
+// Update) and batches it with the turn's other commands.
+func finalize(m chatTUI, cmds []tea.Cmd) tea.Cmd {
+	if len(*m.pendingCommit) > 0 {
+		out := strings.Join(*m.pendingCommit, "\n")
+		*m.pendingCommit = (*m.pendingCommit)[:0]
+		cmds = append(cmds, tea.Println(strings.TrimRight(out, "\n")))
+	}
+	return tea.Batch(cmds...)
+}
+
+// commitLine queues one finalized block for the next scrollback flush.
+func (m *chatTUI) commitLine(s string) {
+	*m.pendingCommit = append(*m.pendingCommit, s)
+}
+
+// commitReasoning freezes the accumulated thinking stream (verbatim, already
+// dim) into scrollback and clears the live buffer.
+func (m *chatTUI) commitReasoning() {
+	if m.reasoning.Len() == 0 {
+		return
+	}
+	// Wrap to the viewport width before committing. bubbletea's non-alt-screen
+	// Println adds an erase-to-end only for message lines *narrower* than the
+	// terminal and never truncates them, so an over-wide reasoning line wraps
+	// and its short final row leaves the old input-box border (the live region
+	// it printed over) bleeding through on the right — the "ghost ────". The
+	// rendered answer is already wrapped, which is why only reasoning stranded.
+	// Wrap each over-long line; keep short ones (the "▎ thinking" header)
+	// verbatim so their indent survives.
+	raw := strings.TrimRight(m.reasoning.String(), "\n")
+	var b strings.Builder
+	for i, line := range strings.Split(raw, "\n") {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		if m.width > 0 && visibleWidth(line) > m.width {
+			b.WriteString(wrapAnsi(line, m.width))
+		} else {
+			b.WriteString(line) // width unknown (pre-sizing) or already fits: verbatim
+		}
+	}
+	m.commitLine(b.String())
+	m.reasoning.Reset()
+}
+
+// commitPending renders the accumulated answer as markdown and freezes it into
+// scrollback. Joining commitReasoning then commitPending puts the answer on its
+// own line, restoring the thinking→answer break the renderer strips.
+func (m *chatTUI) commitPending() {
+	if m.pending.Len() == 0 {
+		return
+	}
+	raw := m.pending.String()
+	rendered := m.renderer.Render(raw)
+	if rendered == "" {
+		rendered = raw
+	}
+	m.commitLine(strings.TrimRight(rendered, "\n"))
+	m.pending.Reset()
+}
+
+// handleApprovalKey resolves a pending tool-call approval from a keystroke and
+// re-arms the approval listener. y/Enter allows once, a allows for the rest of
+// the session, n/Esc denies. Ctrl-C cancels the whole turn via the run context.
+func (m chatTUI) handleApprovalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	answer := func(resp approvalResp) (tea.Model, tea.Cmd) {
+		m.pendingApproval.reply <- resp // reply is buffered, never blocks
+		m.pendingApproval = nil
+		return m, waitForApproval(m.approvalCh)
+	}
+	switch msg.String() {
+	case "ctrl+c":
+		if m.cancel != nil {
+			m.cancel() // cancels the run ctx; the approver unblocks via ctx.Done()
+		}
+		return answer(approvalResp{allow: false})
+	case "enter":
+		return answer(approvalResp{allow: true})
+	case "esc":
+		return answer(approvalResp{allow: false})
+	}
+	switch strings.ToLower(msg.String()) {
+	case "y":
+		return answer(approvalResp{allow: true})
+	case "a":
+		return answer(approvalResp{allow: true, session: true})
+	case "n":
+		return answer(approvalResp{allow: false})
+	}
+	return m, nil // ignore anything else while awaiting a decision
+}
+
+var (
+	// Input box: only top + bottom borders, no sides.
+	inputBoxStyle = lipgloss.NewStyle().
+			Border(lipgloss.NormalBorder(), true, false, true, false).
+			BorderForeground(lipgloss.Color("173")).
+			PaddingLeft(1)
+
+	// Approval banner: same frame as the input box, recoloured yellow.
+	approvalBannerStyle = lipgloss.NewStyle().
+				Border(lipgloss.NormalBorder(), true, false, true, false).
+				BorderForeground(lipgloss.Color("220")).
+				Foreground(lipgloss.Color("220")).
+				Bold(true).
+				PaddingLeft(1)
+
+	statusStyle = lipgloss.NewStyle().Faint(true)
+)
+
+func (m chatTUI) View() tea.View {
+	boxW := m.width
+	if boxW < 10 {
+		boxW = 10
+	}
+	box := inputBoxStyle.Width(boxW).Render(m.input.View())
+
+	var modeTag string
+	if m.planMode {
+		modeTag = yellow("[plan]")
+	} else {
+		modeTag = dim("[auto]")
+	}
+
+	ctxTag := m.contextTag()
+	var status string
+	switch {
+	case m.pendingApproval != nil:
+		status = "  " + modeTag + " · " + i18n.M.ChatStatusToolApproval
+	case m.state == tuiRunning:
+		status = fmt.Sprintf("  %s · "+i18n.M.ChatStatusThinkingFmt, modeTag, m.spinner.View(), m.elapsed)
+	case m.pendingPlan != "":
+		status = "  " + modeTag + " · " + i18n.M.ChatStatusPlanApproval
+	default:
+		status = "  " + modeTag + " · " + i18n.M.ChatStatusIdle
+	}
+	if ctxTag != "" {
+		status += " · " + ctxTag
+	}
+
+	// The bottom region must stay a stable height: bubbletea's non-alt-screen
+	// renderer commits scrollback via tea.Println by clearing the previous
+	// frame's lines, so a frame whose height changed every streamed token (a
+	// growing live preview) drifts and strands input-box border lines in the
+	// history. So we don't preview the streaming text here — it lands in
+	// scrollback at boundaries (tool lines stream live; reasoning and the
+	// rendered answer commit at their edges). The menu/banner change height only
+	// on discrete user actions, never mid-stream.
+	var parts []string
+	rowsAboveBox := 0 // terminal rows occupied by banner/menu before the input box
+	if banner := m.renderApprovalBanner(); banner != "" {
+		parts = append(parts, banner)
+		rowsAboveBox += strings.Count(banner, "\n") + 1
+	}
+	if menu := m.renderCompletion(); menu != "" {
+		parts = append(parts, menu)
+		rowsAboveBox += strings.Count(menu, "\n") + 1
+	}
+	parts = append(parts, box, statusStyle.Render(status))
+
+	v := tea.NewView(strings.Join(parts, "\n"))
+	// Anchor the real terminal cursor at the textarea's insertion point so IME
+	// candidate windows appear in the input box, not at the bottom of the frame.
+	// input.Cursor() is relative to the textarea; offset it by the box's screen
+	// position (rows above + the box's top border row; +1 column for PaddingLeft).
+	if cur := m.input.Cursor(); cur != nil {
+		cur.X += 1
+		cur.Y += rowsAboveBox + 1
+		v.Cursor = cur
+	}
+	return v
+}
+
+// contextTag renders the prompt-vs-context-window gauge for the status line.
+func (m chatTUI) contextTag() string {
+	if m.hooks.contextSnapshot == nil {
+		return ""
+	}
+	used, window := m.hooks.contextSnapshot()
+	if used == 0 || window == 0 {
+		return ""
+	}
+	pct := used * 100 / window
+	body := fmt.Sprintf("%s / %s ctx (%d%%)", shortTokens(used), shortTokens(window), pct)
+	switch {
+	case pct >= 85:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render(body)
+	case pct >= 60:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("220")).Render(body)
+	default:
+		return dim(body)
+	}
+}
+
+// shortTokens prints token counts compactly: 142_000 → "142K", 1_000_000 → "1M".
+func shortTokens(n int) string {
+	switch {
+	case n >= 1_000_000:
+		return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
+	case n >= 1_000:
+		return fmt.Sprintf("%dK", n/1_000)
+	default:
+		return fmt.Sprintf("%d", n)
+	}
+}
+
+// renderApprovalBanner is the slim notice shown above the input while a tool
+// call (or a plan) awaits the user's decision.
+func (m chatTUI) renderApprovalBanner() string {
+	w := m.width
+	if w < 10 {
+		w = 10
+	}
+	if m.pendingApproval != nil {
+		subj := strings.TrimSpace(m.pendingApproval.subject)
+		if subj != "" {
+			subj = " " + truncateSubject(subj, w)
+		}
+		text := fmt.Sprintf(i18n.M.ToolApprovalPromptFmt, m.pendingApproval.tool, subj)
+		return approvalBannerStyle.Width(w).Render("⏸ " + text)
+	}
+	if m.pendingPlan == "" {
+		return ""
+	}
+	return approvalBannerStyle.Width(w).Render("⏸ " + i18n.M.PlanApprovalPrompt)
+}
+
+// truncateSubject trims a tool subject so the approval banner fits one line.
+func truncateSubject(s string, width int) string {
+	max := width - 28
+	if max < 16 {
+		max = 16
+	}
+	r := []rune(s)
+	if len(r) > max {
+		return string(r[:max]) + "…"
+	}
+	return s
+}
+
+// growInputToFit resizes the textarea to the number of lines its value spans,
+// capped at maxInputRows so a long paste doesn't crowd the screen.
+const maxInputRows = 5
+
+func (m *chatTUI) growInputToFit() {
+	lines := strings.Count(m.input.Value(), "\n") + 1
+	if lines < 1 {
+		lines = 1
+	}
+	if lines > maxInputRows {
+		lines = maxInputRows
+	}
+	if lines != m.input.Height() {
+		m.input.SetHeight(lines)
+	}
+}
+
+// startTurn commits the user bubble to scrollback, resets the turn accumulator,
+// and kicks off runner.Run. `sent` goes to the model (may carry a plan-mode
+// marker); `displayed` is what the transcript shows.
+func (m *chatTUI) startTurn(sent, displayed string) tea.Cmd {
+	// Flush any half-streamed leftover before the new turn (defensive).
+	m.commitReasoning()
+	m.commitPending()
+	m.turnAccumulator.Reset()
+	m.commitLine("") // blank line separating turns
+	m.commitLine(renderUserBubble(displayed, m.width, m.planMode))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	m.cancel = cancel
+	m.state = tuiRunning
+	m.runStart = time.Now()
+	m.elapsed = 0
+	runner := m.runner
+	done := m.doneCh
+	go func() {
+		done <- runner.Run(ctx, sent)
+	}()
+	return tea.Batch(m.spinner.Tick, elapsedTick())
+}
+
+// ingestChunk routes one slice of agent-emitted bytes. Reasoning (dim) and
+// answer free-text accumulate in their live buffers; an event line (tool
+// dispatch, usage, warning, coordinator marker) first finalizes the reasoning
+// and answer streamed so far, then is itself committed — preserving order.
+func (m *chatTUI) ingestChunk(chunk string) {
+	if strings.HasPrefix(chunk, "\x1b[2m") {
+		m.reasoning.WriteString(chunk) // dim reasoning header / fragment
+		return
+	}
+	if isEventChunk(chunk) {
+		m.commitReasoning()
+		m.commitPending()
+		m.commitLine(strings.TrimRight(chunk, "\n"))
+		return
+	}
+	// Free text (the answer). Reasoning ends as the answer begins.
+	m.commitReasoning()
+	m.pending.WriteString(chunk)
+	m.turnAccumulator.WriteString(chunk)
+}
+
+// isEventChunk decides whether a chunk is an agent-generated event line (tool
+// dispatch, usage telemetry, warning, coordinator marker) rather than reasoning
+// (handled separately) or model free text. Prefix matching is reliable for the
+// agent-controlled prefixes; the coordinator's "[" marker needs the suffix
+// check so model output starting with "[" stays in the answer buffer.
+func isEventChunk(chunk string) bool {
+	switch {
+	case strings.HasPrefix(chunk, "  · "):
+		return true // usage line, truncation / compaction notice
+	case strings.HasPrefix(chunk, "  -> "):
+		return true // tool dispatch
+	case strings.HasPrefix(chunk, "  ! "):
+		return true // finish_reason warning
+	case strings.HasPrefix(chunk, "["):
+		end := strings.IndexByte(chunk, '\n')
+		if end < 0 {
+			end = len(chunk)
+		}
+		head := chunk[:end]
+		return strings.Contains(head, " · planning]") || strings.Contains(head, " · executing]")
+	}
+	return false
+}
+
+func waitForAgentText(ch chan string) tea.Cmd {
+	return func() tea.Msg { return agentTextMsg(<-ch) }
+}
+
+func waitForAgentDone(ch chan error) tea.Cmd {
+	return func() tea.Msg { return agentDoneMsg{err: <-ch} }
+}
+
+// approvalReqMsg carries a tool-call approval request into the update loop.
+type approvalReqMsg approvalReq
+
+// waitForApproval blocks on the approval channel and delivers the next request
+// as a tea.Msg. Re-armed only after the user answers the current one.
+func waitForApproval(ch chan approvalReq) tea.Cmd {
+	if ch == nil {
+		return nil
+	}
+	return func() tea.Msg { return approvalReqMsg(<-ch) }
+}
+
+func elapsedTick() tea.Cmd {
+	return tea.Tick(time.Second, func(_ time.Time) tea.Msg { return elapsedTickMsg{} })
+}
+
+// runSlashCommand handles "/<cmd> <args>" input. Local commands queue their
+// output to scrollback; MCP prompt / custom commands resolve to a model turn.
+func (m *chatTUI) runSlashCommand(input string) tea.Cmd {
+	cmd := strings.TrimSpace(strings.SplitN(input, " ", 2)[0])
+
+	if strings.HasPrefix(cmd, "/mcp__") {
+		return m.runMCPPrompt(input)
+	}
+
+	switch cmd {
+	case "/compact":
+		if m.hooks.compact == nil {
+			m.notice(i18n.M.SlashUnavailable)
+			return nil
+		}
+		if err := m.hooks.compact(); err != nil {
+			m.notice(fmt.Sprintf("%s: %v", i18n.M.SlashCompactFailed, err))
+			return nil
+		}
+		m.notice(i18n.M.SlashCompactDone)
+		if m.hooks.save != nil {
+			_ = m.hooks.save()
+		}
+	case "/new":
+		if m.hooks.newSession == nil {
+			m.notice(i18n.M.SlashUnavailable)
+			return nil
+		}
+		if err := m.hooks.newSession(); err != nil {
+			m.notice(fmt.Sprintf("%s: %v", i18n.M.SlashNewFailed, err))
+			return nil
+		}
+		// Native scrollback keeps the old transcript; mark the fork with a fresh
+		// banner and reset live state.
+		m.pending.Reset()
+		m.reasoning.Reset()
+		m.turnAccumulator.Reset()
+		m.pendingPlan = ""
+		m.commitLine("")
+		m.commitLine(strings.TrimRight(renderTUIBanner(m.label, "", m.width), "\n"))
+		m.notice(i18n.M.SlashNewDone)
+	case "/mcp":
+		m.showMCPStatus()
+	case "/help":
+		m.notice(i18n.M.SlashHelp)
+		if names := m.commandNames(); names != "" {
+			m.notice("custom: " + names)
+		}
+	default:
+		if c, ok := m.lookupCommand(strings.TrimPrefix(cmd, "/")); ok {
+			args := strings.Fields(input)
+			return m.startTurn(m.composeSent(c.Render(args[1:])), input)
+		}
+		m.notice(fmt.Sprintf("%s: %s", i18n.M.SlashUnknown, cmd))
+	}
+	return nil
+}
+
+// lookupCommand finds a custom slash command by name.
+func (m *chatTUI) lookupCommand(name string) (command.Command, bool) {
+	for _, c := range m.commands {
+		if c.Name == name {
+			return c, true
+		}
+	}
+	return command.Command{}, false
+}
+
+// commandNames renders the custom command list for /help, "" when there are none.
+func (m *chatTUI) commandNames() string {
+	if len(m.commands) == 0 {
+		return ""
+	}
+	names := make([]string, len(m.commands))
+	for i, c := range m.commands {
+		names[i] = "/" + c.Name
+	}
+	return strings.Join(names, " · ")
+}
+
+// showMCPStatus queues the connected MCP servers, their counts, and the prompt
+// commands / resource refs they expose — the discovery surface for /mcp.
+func (m *chatTUI) showMCPStatus() {
+	if m.host == nil || len(m.host.Servers()) == 0 {
+		m.notice(i18n.M.SlashMCPNone)
+		return
+	}
+	servers := m.host.Servers()
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s\n", dim(fmt.Sprintf("  · MCP servers (%d)", len(servers))))
+	for _, s := range servers {
+		fmt.Fprintf(&b, "    %s %s %s\n", accent("✓"), bold(s.Name),
+			dim(fmt.Sprintf("(%s) — %d tools · %d prompts · %d resources", s.Transport, s.Tools, s.Prompts, s.Resources)))
+	}
+	for _, p := range m.host.Prompts() {
+		fmt.Fprintf(&b, "      %s  %s\n", "/"+p.Name, dim(p.Description))
+	}
+	for _, r := range m.host.Resources() {
+		label := r.Name
+		if label == "" {
+			label = r.Description
+		}
+		fmt.Fprintf(&b, "      %s  %s\n", "@"+r.Server+":"+r.URI, dim(label))
+	}
+	m.commitLine(strings.TrimRight(b.String(), "\n"))
+}
+
+// notice queues a dim informational line to scrollback.
+func (m *chatTUI) notice(note string) {
+	m.commitLine(dim("  · " + note))
+}
+
+// composeSent applies the plan-mode marker (when active) to a turn's input.
+func (m *chatTUI) composeSent(text string) string {
+	if m.planMode {
+		return planModeMarker + "\n\n" + text
+	}
+	return text
+}
+
+// runMCPPrompt resolves a /mcp__server__prompt command: it maps positional args
+// onto the prompt's declared arguments and returns a tea.Cmd that fetches the
+// rendered prompt off the event loop, delivering a promptResolvedMsg.
+func (m *chatTUI) runMCPPrompt(input string) tea.Cmd {
+	fields := strings.Fields(input)
+	name := strings.TrimPrefix(fields[0], "/")
+
+	prompts := m.prompts()
+	var found *plugin.Prompt
+	for i := range prompts {
+		if prompts[i].Name == name {
+			found = &prompts[i]
+			break
+		}
+	}
+	if found == nil {
+		m.notice(fmt.Sprintf("%s: /%s", i18n.M.SlashUnknown, name))
+		return nil
+	}
+
+	args := map[string]string{}
+	for i, a := range found.Args {
+		if i+1 < len(fields) {
+			args[a.Name] = fields[i+1]
+		}
+	}
+
+	prompt := *found
+	display := input
+	return func() tea.Msg {
+		text, err := prompt.Get(context.Background(), args)
+		return promptResolvedMsg{display: display, sent: text, err: err}
+	}
+}
+
+// replaySectionsFor turns a loaded session into scrollback blocks: user bubbles
+// and assistant markdown. Tool messages are dropped — needed in session state
+// but noise in the visible transcript on resume.
+func replaySectionsFor(history []provider.Message, width int, renderer *mdRenderer) []string {
+	var out []string
+	for _, m := range history {
+		switch m.Role {
+		case provider.RoleUser:
+			content := strings.TrimPrefix(m.Content, planModeMarker+"\n\n")
+			out = append(out, renderUserBubble(content, width, false)+"\n\n")
+		case provider.RoleAssistant:
+			body := strings.TrimSpace(m.Content)
+			if body == "" {
+				continue
+			}
+			rendered := renderer.Render(body)
+			if rendered == "" {
+				rendered = body
+			}
+			out = append(out, rendered+"\n")
+		}
+	}
+	return out
+}
+
+// renderTUIBanner is the title + tip + optional missing-key warning printed once
+// at the top of the session.
+func renderTUIBanner(label, missing string, width int) string {
+	var b strings.Builder
+	b.WriteString(accent("◆") + " " + bold("reasonix chat") + "  " + dim("· "+label) + "\n")
+	b.WriteString(dim("  "+i18n.M.ChatTip) + "\n")
+	if missing != "" {
+		b.WriteString(wrapForViewport("  ! "+missing, width, lipgloss.Color("3")) + "\n")
+	}
+	return b.String()
+}
+
+// wrapForViewport hard-wraps text to fit width columns and colours every line.
+func wrapForViewport(text string, width int, fg color.Color) string {
+	if width <= 0 {
+		width = 80
+	}
+	return lipgloss.NewStyle().
+		Foreground(fg).
+		Width(width).
+		Render(text)
+}
+
+// renderUserBubble styles the just-submitted line with a filled dim background.
+func renderUserBubble(line string, width int, planMode bool) string {
+	prefix := "› "
+	if planMode {
+		prefix = "› [plan] "
+	}
+	if !colorEnabled {
+		return "│ " + prefix + line
+	}
+	w := width - 4
+	if w < 10 {
+		w = 10
+	}
+	bubble := lipgloss.NewStyle().
+		Background(lipgloss.Color("236")).
+		Width(w).
+		Padding(0, 1)
+	return bubble.Render(prefix + line)
+}
+
+// channelWriter is the io.Writer the agent writes to in TUI mode. Each Write
+// becomes an agentTextMsg. The channel is generously buffered so streaming
+// bursts don't back-pressure the agent goroutine.
+type channelWriter struct {
+	ch chan<- string
+}
+
+func (w *channelWriter) Write(p []byte) (int, error) {
+	w.ch <- string(p)
+	return len(p), nil
+}
+
+// approvalReq is a pending tool-call approval handed from the agent goroutine to
+// the TUI. reply (buffered) carries the decision back.
+type approvalReq struct {
+	tool    string
+	subject string
+	reply   chan approvalResp
+}
+
+// approvalResp is the user's answer: allow once / for the session, or deny.
+type approvalResp struct {
+	allow   bool
+	session bool
+}
+
+// channelApprover is the permission.Approver used by `reasonix chat`. It bridges the
+// agent goroutine to the bubbletea loop: a request is sent over reqCh and
+// Approve blocks on the reply until the user answers — or the turn's context is
+// cancelled. A per-session grant short-circuits future prompts for the same
+// tool+subject; the mutex serialises prompts so concurrent calls queue.
+type channelApprover struct {
+	reqCh   chan approvalReq
+	mu      sync.Mutex
+	granted map[string]bool
+}
+
+func newChannelApprover(reqCh chan approvalReq) *channelApprover {
+	return &channelApprover{reqCh: reqCh, granted: map[string]bool{}}
+}
+
+func (a *channelApprover) Approve(ctx context.Context, tool, subject string, _ json.RawMessage) (bool, bool, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	key := tool + "\x00" + subject
+	if a.granted[key] {
+		return true, false, nil // a "this session" grant already covers this call
+	}
+
+	reply := make(chan approvalResp, 1)
+	select {
+	case a.reqCh <- approvalReq{tool: tool, subject: subject, reply: reply}:
+	case <-ctx.Done():
+		return false, false, ctx.Err()
+	}
+	select {
+	case r := <-reply:
+		if r.allow && r.session {
+			a.granted[key] = true
+		}
+		// remember=false: session grants live here, not in the on-disk policy
+		// (persistence is future scope — see SPEC §9).
+		return r.allow, false, nil
+	case <-ctx.Done():
+		return false, false, ctx.Err()
+	}
+}

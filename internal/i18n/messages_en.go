@@ -1,0 +1,91 @@
+package i18n
+
+// English is the baseline catalogue. The drift-guard test reflects over its
+// fields, so every other catalogue must populate the same set.
+var English = Messages{
+	Subtitle:        "config + plugin driven coding agent",
+	WelcomeTitleFmt: "Welcome to %s",
+	NoConfigYet:     "No configuration found yet — let's set it up.",
+	StartingChatFmt: "Starting %s…",
+	SetKeyHint:      "Set your API key, then run `reasonix chat`.",
+	ConfigLabel:     "config",
+	ModelsLabel:     "models",
+	ConfigNotFound:  "not found — using built-in defaults",
+	ConfigErrorFmt:  "%s — error: %v",
+	NoKey:           "no key",
+	Ready:           "ready",
+	GetStarted:      "Get started",
+	StepScaffold:    "scaffold reasonix.toml",
+	StepSetKey:      "set API key",
+	StepSetKeyHint:  "export DEEPSEEK_API_KEY=… or add to .env",
+	StepChatDesc:    "interactive session",
+	StepRunDesc:     "one-shot task",
+	HelpFooter:      "reasonix help · all commands",
+
+	ChatTip:           "Context is kept across turns. Type 'exit' or Ctrl-D to quit.",
+	TurnCancelled:     "cancelled — back to prompt",
+	NoSessionToResume: "no saved session to resume — start a new one with `reasonix chat`",
+	ResumeRequiresTTY: "--resume needs an interactive terminal; pass --continue for the most recent session",
+	PickSessionLabel:  "Resume which session?",
+
+	ChatStatusThinkingFmt:  "%s thinking… (%ds · Esc cancels)",
+	ChatStatusIdle:         "Tab toggles plan · Enter sends · Esc clears/exits state · PgUp/PgDn scrolls · Ctrl-D quits",
+	ChatStatusPlanApproval: "Enter approves · type to revise · Esc dismisses · PgUp/PgDn scrolls",
+	PlanApprovalPrompt:     "Plan ready above — Enter to approve, or type to revise",
+	ChatStatusToolApproval: "y approve once · a allow this session · n deny · Ctrl-C cancels turn",
+	ToolApprovalPromptFmt:  "Allow %s%s? — [y] once · [a] this session · [n] no",
+
+	SlashCompactDone:   "session compacted — older middle replaced by a summary, recent turns kept",
+	SlashCompactFailed: "compaction failed",
+	SlashNewDone:       "fresh session started — previous transcript saved",
+	SlashNewFailed:     "could not start a new session",
+	SlashUnavailable:   "command unavailable in this build",
+	SlashUnknown:       "unknown command",
+	SlashHelp:          "commands: /compact (manual context compaction) · /new (fork a fresh session) · /mcp (MCP servers) · /help",
+	SlashPromptEmpty:   "the MCP prompt returned no content to send",
+	SlashMCPNone:       "no MCP servers configured — add a [[plugins]] entry in reasonix.toml",
+	CompHintSlash:      "↑/↓ move · Tab/Enter select · Esc close",
+	CompHintFile:       "↑/↓ move · Tab/Enter open folder or pick file · Esc close",
+
+	SelectProvidersLabel:  "Select providers to enable",
+	EnterAPIKeysHeader:    "Enter API keys (Enter to skip and set later in .env):",
+	MissingKeyIntro:       "reasonix.toml is ready — just an API key away.",
+	WroteFileFmt:          "Wrote %s",
+	SetupComplete:         "Setup complete.",
+	SetupCancelled:        "setup cancelled.",
+	TryHintFmt:            "Try: %s",
+	NextHint:              "Next: set your API key (export DEEPSEEK_API_KEY=... or add to .env), then run `reasonix run \"your task\"`.",
+	ConfirmReconfigureFmt: "%s already exists. Reconfigure and overwrite?",
+	KeepingExisting:       "Keeping existing config.",
+	NotOverwritingFmt:     "%s already exists; not overwriting",
+
+	UnknownCommandFmt: "unknown command %q",
+	UsageRunHint:      "usage: reasonix run [--model NAME] <task>",
+	ErrorPrefix:       "error:",
+	WriteConfigErr:    "write config:",
+	WriteEnvErr:       "write .env:",
+
+	SelectOneHint:  "(↑/↓ · Enter · q to cancel)",
+	SelectManyHint: "(↑/↓ · Space · Enter · q)",
+
+	UsageBody: `reasonix — a config- and plugin-driven coding agent (multi-model)
+
+Usage:
+  reasonix chat [--model NAME]                          interactive session (multi-turn)
+  reasonix run  [--model NAME] [--max-steps N] <task>   run one task and exit
+  reasonix init [path]                                  interactive setup; writes reasonix.toml (+ .env)
+  reasonix version
+  reasonix help
+
+Examples:
+  reasonix chat
+  reasonix run "implement the TODOs in main.go"
+  reasonix run --model mimo-pro "add unit tests for this function"
+  echo "explain this code" | reasonix run
+
+Configuration:
+  Resolution: flag > ./reasonix.toml > ~/.config/reasonix/config.toml > built-in defaults
+  Secrets come from the environment via api_key_env (e.g. DEEPSEEK_API_KEY).
+  Run 'reasonix init' to scaffold a config; see docs/SPEC.md.
+`,
+}

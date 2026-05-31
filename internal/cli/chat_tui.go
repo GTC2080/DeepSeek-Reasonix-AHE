@@ -43,6 +43,11 @@ type chatTUI struct {
 
 	width  int
 	height int
+	// repaintToggle flips on each resize-triggered forceRepaintMsg so the View
+	// differs byte-for-byte, defeating the renderer's "unchanged view → skip
+	// render" optimization and forcing the one extra repaint that clears the
+	// resize ghost (the same repaint a keystroke would have triggered).
+	repaintToggle bool
 
 	input   textarea.Model
 	spinner spinner.Model
@@ -145,6 +150,12 @@ type agentEventMsg event.Event
 // Ns" counter in the status line.
 type elapsedTickMsg struct{}
 
+// forceRepaintMsg is queued after a real terminal resize to trigger one extra
+// render. In inline mode bubbletea's resize redraw can leave the prior frame's
+// border on screen until the next normal render (typing clears it); this fires
+// that render automatically so the user doesn't have to.
+type forceRepaintMsg struct{}
+
 // balanceMsg carries the result of an async wallet-balance fetch; text is the
 // formatted readout ("" when none/failed).
 type balanceMsg struct{ text string }
@@ -241,15 +252,14 @@ func (m chatTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		// bubbletea's program loop already calls renderer.resize() on a size
-		// change, which Erases and forces a full redraw — so we only update our
-		// own width-derived state here. We must NOT emit tea.ClearScreen: in
-		// inline (non-alt-screen) mode clearScreen does MoveTo(0,0) into the
-		// scrollback region and redraws there, stranding the prior frame — it
-		// causes the ghosting it looks like it should fix. The actual fix for
-		// resize artifacts is keeping every frame line within m.width (the status
-		// line is clamped; the input box renders exactly m.width) so the native
-		// redraw never leaves a wrapped remnant.
+		// bubbletea already resizes+redraws the renderer on a size change, but in
+		// inline mode that single redraw can strand the prior frame's border until
+		// the next normal render (a keystroke clears it). We must NOT use
+		// tea.ClearScreen: inline-mode clearScreen does MoveTo(0,0) into the
+		// scrollback region and repaints there, doubling the frame. Instead, after
+		// an actual size change we queue one forceRepaintMsg — an automatic "nudge"
+		// that fires exactly that extra render and wipes the ghost.
+		resized := m.started && (m.width != msg.Width || m.height != msg.Height)
 		m.width = msg.Width
 		m.height = msg.Height
 		m.input.SetWidth(msg.Width - 4)
@@ -269,6 +279,14 @@ func (m chatTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.commitLine(strings.TrimRight(b.String(), "\n"))
 		}
+		if resized {
+			cmds = append(cmds, func() tea.Msg { return forceRepaintMsg{} })
+		}
+
+	case forceRepaintMsg:
+		// Flip the toggle so the next View differs (a zero-width char in the
+		// status line) and the renderer can't skip it — repainting over the ghost.
+		m.repaintToggle = !m.repaintToggle
 
 	case tea.KeyPressMsg:
 		// A question card is modal: keys drive it. In its free-text ("Type
@@ -748,6 +766,12 @@ func (m chatTUI) View() tea.View {
 	if menu := m.renderCompletion(); menu != "" {
 		parts = append(parts, menu)
 		rowsAboveBox += strings.Count(menu, "\n") + 1
+	}
+	if m.repaintToggle {
+		// Zero-width space at the front (survives clampStatusLine, which only trims
+		// the tail) so a post-resize repaint produces a byte-different View and
+		// isn't skipped by the renderer. Invisible: width 0, no glyph.
+		status = "​" + status
 	}
 	parts = append(parts, box, statusStyle.Render(clampStatusLine(status, boxW)))
 

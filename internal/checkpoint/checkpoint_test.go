@@ -35,11 +35,11 @@ func TestRestoreToStartOfTurn(t *testing.T) {
 	write(t, a, "v0")
 	s := New("", root)
 
-	s.Begin(0, "first")
+	s.Begin(0, "first", 0)
 	s.Snapshot(diff.Change{Path: a, Kind: diff.Modify, OldText: "v0"})
 	write(t, a, "v1") // the edit turn 0 made
 
-	s.Begin(1, "second")
+	s.Begin(1, "second", 2)
 	s.Snapshot(diff.Change{Path: a, Kind: diff.Modify, OldText: "v1"})
 	s.Snapshot(diff.Change{Path: b, Kind: diff.Create})
 	write(t, a, "v2")
@@ -62,10 +62,10 @@ func TestRestoreToTurnZero(t *testing.T) {
 	a := filepath.Join(root, "a.txt")
 	write(t, a, "v0")
 	s := New("", root)
-	s.Begin(0, "first")
+	s.Begin(0, "first", 0)
 	s.Snapshot(diff.Change{Path: a, Kind: diff.Modify, OldText: "v0"})
 	write(t, a, "v1")
-	s.Begin(1, "second")
+	s.Begin(1, "second", 2)
 	s.Snapshot(diff.Change{Path: a, Kind: diff.Modify, OldText: "v1"})
 	write(t, a, "v2")
 
@@ -82,7 +82,7 @@ func TestSnapshotDedupsFirstTouchWins(t *testing.T) {
 	a := filepath.Join(root, "a.txt")
 	write(t, a, "orig")
 	s := New("", root)
-	s.Begin(0, "p")
+	s.Begin(0, "p", 0)
 	s.Snapshot(diff.Change{Path: a, Kind: diff.Modify, OldText: "orig"})
 	s.Snapshot(diff.Change{Path: a, Kind: diff.Modify, OldText: "edited-once"}) // ignored
 	write(t, a, "edited-twice")
@@ -99,7 +99,7 @@ func TestRestoreRejectsPathEscape(t *testing.T) {
 	outside := filepath.Join(t.TempDir(), "evil.txt")
 	write(t, outside, "keep")
 	s := New("", root)
-	s.Begin(0, "p")
+	s.Begin(0, "p", 0)
 	s.Snapshot(diff.Change{Path: outside, Kind: diff.Modify, OldText: "hacked"})
 	if _, _, err := s.RestoreCode(0); err == nil {
 		t.Fatal("RestoreCode should reject a path outside the workspace")
@@ -115,11 +115,11 @@ func TestPersistenceRoundTrip(t *testing.T) {
 	a := filepath.Join(root, "a.txt")
 
 	s := New(dir, root)
-	s.Begin(0, "hello")
+	s.Begin(0, "hello", 1)
 	s.Snapshot(diff.Change{Path: a, Kind: diff.Modify, OldText: "v0"})
-	s.Begin(1, "world")
+	s.Begin(1, "world", 5)
 
-	// A fresh store over the same dir must see both turns.
+	// A fresh store over the same dir must see both turns and their boundaries.
 	s2 := New(dir, root)
 	metas := s2.List()
 	if len(metas) != 2 {
@@ -127,5 +127,13 @@ func TestPersistenceRoundTrip(t *testing.T) {
 	}
 	if metas[0].Prompt != "hello" || metas[1].Prompt != "world" {
 		t.Fatalf("prompts = %q, %q", metas[0].Prompt, metas[1].Prompt)
+	}
+	// Boundaries must survive the round-trip so a resumed session can rewind/fork.
+	b := s2.Bounds()
+	if b[0] != 1 || b[1] != 5 {
+		t.Fatalf("bounds = %v, want {0:1, 1:5}", b)
+	}
+	if s2.NextTurn() != 2 {
+		t.Fatalf("NextTurn = %d, want 2", s2.NextTurn())
 	}
 }

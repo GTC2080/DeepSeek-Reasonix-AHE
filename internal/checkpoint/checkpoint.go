@@ -31,12 +31,15 @@ type FileSnap struct {
 }
 
 // Checkpoint anchors the pre-edit state of every distinct file touched during one
-// user turn.
+// user turn. MsgIndex is len(Session.Messages) at the turn's start — the
+// conversation-rewind boundary — persisted so a resumed session can rewind the
+// conversation and fork, not just the code.
 type Checkpoint struct {
-	Turn   int        `json:"turn"`
-	Time   time.Time  `json:"time"`
-	Prompt string     `json:"prompt"`
-	Files  []FileSnap `json:"files"`
+	Turn     int        `json:"turn"`
+	Time     time.Time  `json:"time"`
+	Prompt   string     `json:"prompt"`
+	MsgIndex int        `json:"msgIndex"`
+	Files    []FileSnap `json:"files"`
 }
 
 // Meta is the picker-facing summary of a checkpoint (no file contents).
@@ -94,16 +97,32 @@ func (s *Store) load() {
 }
 
 // Begin opens a checkpoint for a new user turn, finalizing the previous one. The
-// prompt labels it in the picker.
-func (s *Store) Begin(turn int, prompt string) {
+// prompt labels it in the picker; msgIndex is the conversation-rewind boundary.
+func (s *Store) Begin(turn int, prompt string, msgIndex int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.cur != nil {
 		s.done = append(s.done, s.cur)
 	}
-	s.cur = &Checkpoint{Turn: turn, Time: time.Now(), Prompt: prompt}
+	s.cur = &Checkpoint{Turn: turn, Time: time.Now(), Prompt: prompt, MsgIndex: msgIndex}
 	s.seen = map[string]bool{}
 	s.persist(s.cur)
+}
+
+// Bounds returns turn → MsgIndex over all checkpoints (persisted + current), so
+// the controller can rebuild its conversation-rewind boundaries after loading a
+// resumed session's checkpoints from disk.
+func (s *Store) Bounds() map[int]int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	m := make(map[int]int, len(s.done)+1)
+	for _, c := range s.done {
+		m[c.Turn] = c.MsgIndex
+	}
+	if s.cur != nil {
+		m[s.cur.Turn] = s.cur.MsgIndex
+	}
+	return m
 }
 
 // Snapshot records the pre-edit state of the file a writer is about to change.

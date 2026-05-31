@@ -76,9 +76,10 @@ type Controller struct {
 	// writes. cpTurn is the monotonic turn counter (decoupled from the store so it
 	// never collides after a restructure); cpBound[turn] records len(Session.Messages)
 	// at that turn's start — the truncation boundary for a conversation rewind/fork.
-	// Boundaries are live-session only (not persisted) and dropped when a summarize
-	// restructures the log, so those operations report "unavailable" rather than
-	// mis-truncating; code rewind (file-based) is unaffected.
+	// Boundaries are persisted in each checkpoint and rebuilt from the store on
+	// resume (so a reopened session can still rewind conversation / fork), but
+	// dropped after a summarize restructures the log so those operations report
+	// "unavailable" rather than mis-truncating; code rewind (file-based) is unaffected.
 	cp      *checkpoint.Store
 	cpRoot  string
 	cpTurn  int
@@ -227,7 +228,10 @@ func (c *Controller) rebindCheckpoints(sessionPath string) {
 	defer c.mu.Unlock()
 	c.cp = checkpoint.New(ckptDir(sessionPath), c.cpRoot)
 	c.cpTurn = c.cp.NextTurn() // continue numbering past any checkpoints on disk
-	c.cpBound = map[int]int{}
+	c.cpBound = c.cp.Bounds()  // rebuilt from persisted checkpoints so a resumed
+	if c.cpBound == nil {      // session can still rewind conversation / fork
+		c.cpBound = map[int]int{}
+	}
 }
 
 // beginCheckpoint opens a checkpoint for the turn about to run, recording the
@@ -240,9 +244,10 @@ func (c *Controller) beginCheckpoint(input string) {
 	c.mu.Lock()
 	turn := c.cpTurn
 	c.cpTurn++
-	c.cpBound[turn] = len(c.executor.Session().Messages)
+	msgIndex := len(c.executor.Session().Messages)
+	c.cpBound[turn] = msgIndex
 	c.mu.Unlock()
-	c.cp.Begin(turn, input)
+	c.cp.Begin(turn, input, msgIndex)
 }
 
 // --- commands (frontend → controller) ---

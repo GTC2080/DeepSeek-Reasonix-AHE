@@ -53,6 +53,17 @@ context_window = 65536
 [tools]
 enabled = []   # empty = all built-in tools
 
+# CodeGraph code intelligence (symbol/call-graph search via tree-sitter + SQLite),
+# shipped as a built-in MCP server. On by default: when the bundle resolves (beside
+# the reasonix binary, then PATH), the agent gains codegraph_* search / context /
+# explore / trace / node tools. .codegraph/ is initialised on first use (fast); the
+# actual indexing runs in CodeGraph's daemon in the background, so startup never
+# blocks even on a large repo. A missing bundle is a silent no-op. Disable to fall
+# back to grep/glob, or point `path` at a specific launcher.
+# [codegraph]
+# enabled = true
+# path    = ""   # e.g. "~/.local/bin/codegraph"; empty = bundle, then PATH
+
 # Skills are invokable playbooks (SKILL.md / <name>.md with frontmatter), found
 # under .reasonix/skills, .agents/skills, .agent/skills, .claude/skills (project)
 # and the same dirs under ~ (global). Built-ins (explore/research/review/security-review/test)

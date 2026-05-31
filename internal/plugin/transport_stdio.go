@@ -32,6 +32,9 @@ func newStdioTransport(ctx context.Context, s Spec) (*stdioTransport, error) {
 	}
 	cmd := exec.CommandContext(ctx, s.Command, s.Args...)
 	cmd.Env = append(os.Environ(), envSlice(s.Env)...)
+	if s.Dir != "" {
+		cmd.Dir = s.Dir // pin cwd-aware servers (e.g. CodeGraph) to the project root
+	}
 	cmd.Stderr = os.Stderr // surface plugin logs to the terminal
 
 	stdin, err := cmd.StdinPipe()

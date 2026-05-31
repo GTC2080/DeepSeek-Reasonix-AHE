@@ -29,6 +29,11 @@ type Spec struct {
 	Env     map[string]string
 	URL     string
 	Headers map[string]string
+	// Dir, when set, is the working directory of a stdio subprocess. Empty means
+	// inherit reasonix's cwd (the default for user-configured plugins). It exists
+	// for cwd-aware servers like CodeGraph, which detect the project from the
+	// directory they are launched in — they must be pinned to the project root.
+	Dir string
 }
 
 // transport carries JSON-RPC messages to and from one MCP server. call sends a

@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 
+	"reasonix/internal/codegraph"
 	"reasonix/internal/config"
 )
 
@@ -178,9 +179,18 @@ func mcpList() int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	if len(cfg.Plugins) == 0 {
-		fmt.Println("no MCP servers configured")
-		return 0
+	listed := 0
+	// CodeGraph is a built-in server injected by boot, not a [[plugins]] entry, so
+	// report its resolved status here too — otherwise `mcp list` looks empty even
+	// when codegraph will load. This doubles as a headless preflight: it shows
+	// whether the binary resolves before you enter a session.
+	if cfg.Codegraph.Enabled {
+		if bin, ok := codegraph.Resolve(cfg.Codegraph.Path); ok {
+			fmt.Printf("%-16s (stdio, built-in)  %s serve --mcp\n", "codegraph", bin)
+		} else {
+			fmt.Printf("%-16s (built-in, unavailable)  binary not found — ship it beside reasonix, install on PATH, or set [codegraph].path\n", "codegraph")
+		}
+		listed++
 	}
 	for _, p := range cfg.Plugins {
 		typ := p.Type
@@ -193,6 +203,10 @@ func mcpList() int {
 		} else {
 			fmt.Printf("%-16s (%s)  %s\n", p.Name, typ, p.URL)
 		}
+		listed++
+	}
+	if listed == 0 {
+		fmt.Println("no MCP servers configured")
 	}
 	return 0
 }

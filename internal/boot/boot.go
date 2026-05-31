@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"reasonix/internal/agent"
+	"reasonix/internal/codegraph"
 	"reasonix/internal/command"
 	"reasonix/internal/config"
 	"reasonix/internal/control"
@@ -114,8 +115,30 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	// Always construct a host, even with no plugins configured, so the controller's
 	// host pointer is stable for the session and `/mcp add` can hot-add into it.
 	pluginHost := plugin.NewHost()
-	if len(cfg.Plugins) > 0 {
-		host, ptools, err := plugin.StartAll(ctx, PluginSpecs(cfg.Plugins))
+	specs := PluginSpecs(cfg.Plugins)
+	// CodeGraph ships as a built-in MCP server: when enabled and its bundle
+	// resolves, inject it as one more stdio plugin, pinned to the project root (it
+	// is cwd-aware). EnsureInit only creates .codegraph/ (fast, size-independent);
+	// serve's daemon then indexes in the background, so startup never blocks on a
+	// large repo. A missing bundle is a silent no-op — the feature is simply
+	// unavailable and the agent falls back to grep/glob. A failed init is a notice,
+	// not fatal.
+	if cfg.Codegraph.Enabled {
+		if bin, ok := codegraph.Resolve(cfg.Codegraph.Path); ok {
+			if err := codegraph.EnsureInit(ctx, bin, cwd); err != nil {
+				sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn,
+					Text: "codegraph: init failed (" + err.Error() + ") — symbol-graph tools disabled this session"})
+			}
+			specs = append(specs, plugin.Spec{
+				Name:    "codegraph",
+				Command: bin,
+				Args:    []string{"serve", "--mcp"},
+				Dir:     cwd,
+			})
+		}
+	}
+	if len(specs) > 0 {
+		host, ptools, err := plugin.StartAll(ctx, specs)
 		if err != nil {
 			return nil, fmt.Errorf("plugin: %w", err)
 		}

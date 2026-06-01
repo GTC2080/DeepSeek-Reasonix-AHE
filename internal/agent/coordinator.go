@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"reasonix/internal/event"
+	"reasonix/internal/nilutil"
 	"reasonix/internal/provider"
 )
 
@@ -39,7 +40,7 @@ type Coordinator struct {
 // own events to its own sink (the CLI wires the same sink into both). A nil
 // sink is replaced with event.Discard.
 func NewCoordinator(planner provider.Provider, plannerSession *Session, plannerPricing *provider.Pricing, executor *Agent, temperature float64, sink event.Sink) *Coordinator {
-	if sink == nil {
+	if nilutil.IsNil(sink) {
 		sink = event.Discard
 	}
 	return &Coordinator{

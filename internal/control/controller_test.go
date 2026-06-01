@@ -7,6 +7,17 @@ import (
 	"reasonix/internal/event"
 )
 
+type typedNilControllerSink struct{}
+
+func (*typedNilControllerSink) Emit(event.Event) {}
+
+func TestNewTreatsTypedNilSinkAsDiscard(t *testing.T) {
+	var sink *typedNilControllerSink
+	c := New(Options{Sink: sink})
+
+	c.notice("typed nil sink should not panic")
+}
+
 // approvalIDs returns a Controller whose Sink forwards each ApprovalRequest's ID
 // onto the channel, plus a counter of how many requests it emitted.
 func approvalIDs() (*Controller, chan string, *int) {

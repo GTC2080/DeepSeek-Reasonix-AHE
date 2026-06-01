@@ -1,6 +1,10 @@
 package event
 
-import "sync"
+import (
+	"sync"
+
+	"reasonix/internal/nilutil"
+)
 
 // Sync wraps a Sink so concurrent Emit calls are serialized. The base Sink
 // contract assumes serial emission — the agent's run loop emits one event at a
@@ -10,7 +14,7 @@ import "sync"
 // EventsEmit, a TUI channel) without each having to lock. A nil sink yields
 // Discard.
 func Sync(s Sink) Sink {
-	if s == nil {
+	if nilutil.IsNil(s) {
 		return Discard
 	}
 	return &syncSink{inner: s}

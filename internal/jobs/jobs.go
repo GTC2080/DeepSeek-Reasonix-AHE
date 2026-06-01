@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"reasonix/internal/event"
+	"reasonix/internal/nilutil"
 )
 
 // Status is a job's lifecycle state.
@@ -87,7 +88,7 @@ type Manager struct {
 // context (cancelled by Close). sink receives job-lifecycle notices; pass the
 // session's synchronized sink (event.Sync) since jobs emit from goroutines.
 func NewManager(sink event.Sink) *Manager {
-	if sink == nil {
+	if nilutil.IsNil(sink) {
 		sink = event.Discard
 	}
 	root, cancel := context.WithCancel(context.Background())

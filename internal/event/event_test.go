@@ -45,6 +45,22 @@ func TestFuncSinkEmit(t *testing.T) {
 	}
 }
 
+func TestFuncSinkNilEmitIsNoop(t *testing.T) {
+	var fs FuncSink
+
+	fs.Emit(Event{Kind: Text, Text: "hello"})
+}
+
+type typedNilSink struct{}
+
+func (*typedNilSink) Emit(Event) {}
+
+func TestSyncTreatsTypedNilSinkAsDiscard(t *testing.T) {
+	var base *typedNilSink
+
+	Sync(base).Emit(Event{Kind: Text, Text: "hello"})
+}
+
 // --- Discard ---
 
 func TestDiscardSink(t *testing.T) {

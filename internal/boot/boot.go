@@ -358,7 +358,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		classifier = control.NewProviderAutoPlanClassifier(classifierProv)
 	}
 
-	return control.New(control.Options{
+	ctrlOpts := control.Options{
 		Runner:        runner,
 		Executor:      executor,
 		Sink:          sink,
@@ -379,8 +379,11 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		PluginCtx:     ctx,
 		WorkspaceRoot: cwd,
 		AutoPlan:      cfg.Agent.AutoPlan,
-		Classifier:    classifier,
-	}), nil
+	}
+	if classifier != nil {
+		ctrlOpts.Classifier = classifier
+	}
+	return control.New(ctrlOpts), nil
 }
 
 func subagentModelRef(cfg *config.Config, sk skill.Skill) string {

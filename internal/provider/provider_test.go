@@ -233,6 +233,22 @@ func TestNewWithRegisteredKind(t *testing.T) {
 	// We can't easily unregister, but we can test it doesn't panic.
 }
 
+func TestNewRejectsTypedNilProvider(t *testing.T) {
+	kind := "test-typed-nil-__" + t.Name()
+	Register(kind, func(cfg Config) (Provider, error) {
+		var p *mockProvider
+		return p, nil
+	})
+
+	_, err := New(kind, Config{})
+	if err == nil {
+		t.Fatal("New should reject typed nil provider")
+	}
+	if !contains(err.Error(), "returned nil provider") {
+		t.Fatalf("New error = %v, want returned nil provider", err)
+	}
+}
+
 // --- Role constants ---
 
 func TestRoleConstants(t *testing.T) {

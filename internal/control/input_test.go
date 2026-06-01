@@ -185,6 +185,19 @@ func TestRunTurnAutoPlanClassifierFallback(t *testing.T) {
 	}
 }
 
+func TestRunTurnAutoPlanTypedNilClassifierFallsBack(t *testing.T) {
+	var classifier *ProviderAutoPlanClassifier
+	runner := &fakeTurnRunner{}
+	c := New(Options{AutoPlan: "ask", Classifier: classifier, Runner: runner})
+
+	if err := c.runTurn(context.Background(), "实现 README 文档更新"); err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.inputs) != 1 || !strings.HasPrefix(runner.inputs[0], PlanModeMarker) {
+		t.Fatalf("typed nil classifier should fall back to heuristic auto-plan, inputs=%q", runner.inputs)
+	}
+}
+
 func TestRunTurnAutoPlanScoresRawPromptNotResolvedRefs(t *testing.T) {
 	runner := &fakeTurnRunner{}
 	c := New(Options{AutoPlan: "ask", Runner: runner})

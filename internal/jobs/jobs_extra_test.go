@@ -9,6 +9,24 @@ import (
 	"reasonix/internal/event"
 )
 
+type typedNilJobSink struct{}
+
+func (*typedNilJobSink) Emit(event.Event) {}
+
+func TestNewManagerTreatsTypedNilSinkAsDiscard(t *testing.T) {
+	var sink *typedNilJobSink
+	m := NewManager(sink)
+	defer m.Close()
+
+	j := m.Start("bash", "typed nil sink", func(context.Context, io.Writer) (string, error) {
+		return "done", nil
+	})
+	res := m.Wait(context.Background(), []string{j.ID}, 1000)
+	if len(res) != 1 || res[0].Status != Done {
+		t.Fatalf("job result = %+v, want one done job", res)
+	}
+}
+
 // --- Wait with timeout ---
 
 func TestWaitTimeout(t *testing.T) {

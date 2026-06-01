@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+
+	"reasonix/internal/nilutil"
 )
 
 // Role is the role of a message.
@@ -273,7 +275,14 @@ func New(kind string, cfg Config) (Provider, error) {
 	if !ok {
 		return nil, fmt.Errorf("provider: unknown kind %q (registered: %v)", kind, Kinds())
 	}
-	return f(cfg)
+	p, err := f(cfg)
+	if err != nil {
+		return nil, err
+	}
+	if nilutil.IsNil(p) {
+		return nil, fmt.Errorf("provider: factory %q returned nil provider", kind)
+	}
+	return p, nil
 }
 
 // Kinds returns the registered kinds, sorted.

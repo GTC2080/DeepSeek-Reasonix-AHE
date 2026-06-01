@@ -66,3 +66,11 @@ func TestProviderAutoPlanClassifierRequiresNeedsPlan(t *testing.T) {
 		t.Fatal("NeedsPlan should reject JSON without needs_plan")
 	}
 }
+
+func TestProviderAutoPlanClassifierNilReceiverReturnsError(t *testing.T) {
+	var c *ProviderAutoPlanClassifier
+
+	if _, _, err := c.NeedsPlan(context.Background(), "x", 1); err == nil {
+		t.Fatal("NeedsPlan should reject nil classifier")
+	}
+}

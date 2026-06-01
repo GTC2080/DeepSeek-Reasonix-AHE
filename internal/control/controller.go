@@ -29,6 +29,7 @@ import (
 	"reasonix/internal/hook"
 	"reasonix/internal/jobs"
 	"reasonix/internal/memory"
+	"reasonix/internal/nilutil"
 	"reasonix/internal/permission"
 	"reasonix/internal/plugin"
 	"reasonix/internal/provider"
@@ -173,8 +174,12 @@ type Options struct {
 // New builds a Controller. A nil Sink is replaced with event.Discard.
 func New(opts Options) *Controller {
 	sink := opts.Sink
-	if sink == nil {
+	if nilutil.IsNil(sink) {
 		sink = event.Discard
+	}
+	classifier := opts.Classifier
+	if nilutil.IsNil(classifier) {
+		classifier = nil
 	}
 	pluginCtx := opts.PluginCtx
 	if pluginCtx == nil {
@@ -196,7 +201,7 @@ func New(opts Options) *Controller {
 		mem:          opts.Memory,
 		cleanup:      opts.Cleanup,
 		autoPlan:     normalizeAutoPlan(opts.AutoPlan),
-		classifier:   opts.Classifier,
+		classifier:   classifier,
 		balanceURL:   opts.BalanceURL,
 		balanceKey:   opts.BalanceKey,
 		jobs:         opts.Jobs,

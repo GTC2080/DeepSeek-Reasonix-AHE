@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"reasonix/internal/nilutil"
 	"reasonix/internal/provider"
 )
 
@@ -19,13 +20,16 @@ type ProviderAutoPlanClassifier struct {
 }
 
 func NewProviderAutoPlanClassifier(prov provider.Provider) *ProviderAutoPlanClassifier {
-	if prov == nil {
+	if nilutil.IsNil(prov) {
 		return nil
 	}
 	return &ProviderAutoPlanClassifier{prov: prov}
 }
 
 func (c *ProviderAutoPlanClassifier) NeedsPlan(ctx context.Context, input string, score int) (bool, string, error) {
+	if c == nil || nilutil.IsNil(c.prov) {
+		return false, "", fmt.Errorf("auto plan classifier is not initialized")
+	}
 	ch, err := c.prov.Stream(ctx, provider.Request{
 		Messages: []provider.Message{
 			{Role: provider.RoleSystem, Content: autoPlanClassifierPrompt},

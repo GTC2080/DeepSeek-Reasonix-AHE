@@ -14,6 +14,7 @@ import (
 	"reasonix/internal/evidence"
 	"reasonix/internal/jobs"
 	"reasonix/internal/memory"
+	"reasonix/internal/nilutil"
 	"reasonix/internal/provider"
 	"reasonix/internal/tool"
 )
@@ -212,7 +213,12 @@ func (a *Agent) SetPlanMode(v bool) { a.planMode.Store(v) }
 // SetGate installs the per-call permission gate. Used by `reasonix chat` to swap the
 // headless gate built in setup for an interactive one that prompts the user;
 // nil disables gating. Safe to call before the run loop starts.
-func (a *Agent) SetGate(g Gate) { a.gate = g }
+func (a *Agent) SetGate(g Gate) {
+	if nilutil.IsNil(g) {
+		g = nil
+	}
+	a.gate = g
+}
 
 // SetAsker installs the asker the `ask` tool uses to question the user.
 // Interactive frontends wire one in; headless runs leave it nil.
@@ -311,8 +317,16 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
 	if opts.RecentKeep <= 0 {
 		opts.RecentKeep = minRecentKeep
 	}
-	if sink == nil {
+	if nilutil.IsNil(sink) {
 		sink = event.Discard
+	}
+	gate := opts.Gate
+	if nilutil.IsNil(gate) {
+		gate = nil
+	}
+	hooks := opts.Hooks
+	if nilutil.IsNil(hooks) {
+		hooks = nil
 	}
 	return &Agent{
 		prov:          prov,
@@ -322,8 +336,8 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
 		temperature:   opts.Temperature,
 		pricing:       opts.Pricing,
 		sink:          sink,
-		gate:          opts.Gate,
-		hooks:         opts.Hooks,
+		gate:          gate,
+		hooks:         hooks,
 		jobs:          opts.Jobs,
 		evidence:      evidence.NewLedger(),
 		contextWindow: opts.ContextWindow,

@@ -25,7 +25,6 @@ func newTestChatTUI() chatTUI {
 		toolStreamIdx:    -1,
 		reasoning:        &strings.Builder{},
 		pending:          &strings.Builder{},
-		toolStream:       &strings.Builder{},
 		pendingCommit:    &commit,
 		renderer:         newMarkdownRenderer(80),
 	}

@@ -117,11 +117,15 @@ type chatTUI struct {
 	answerFlushed int
 	// toolStreamIdx is the transcript index of a running tool's live-output block
 	// (streamed via ToolProgress under the tool card); -1 when none. toolStreamID
-	// is the call ID it belongs to; toolStream accumulates the output so the block
-	// can re-render its tail and report a line count when it collapses.
+	// is the call ID it belongs to. Only a bounded tail is kept — the last few
+	// complete lines (toolTail) plus the in-progress one (toolPartial) — so a
+	// high-output command can't balloon memory or cost O(n²) re-splitting;
+	// toolLineCount feeds the collapse summary.
 	toolStreamIdx   int
 	toolStreamID    string
-	toolStream      *strings.Builder
+	toolTail        []string
+	toolPartial     string
+	toolLineCount   int
 	transcriptDirty bool
 	eventCh         chan event.Event
 	started         bool // banner + resumed history committed once
@@ -374,7 +378,6 @@ func newChatTUI(ctrl *control.Controller, missing string, eventCh chan event.Eve
 		toolStreamIdx:    -1,
 		reasoning:        &strings.Builder{},
 		pending:          &strings.Builder{},
-		toolStream:       &strings.Builder{},
 		pendingCommit:    &commitBuf,
 		renderer:         newMarkdownRenderer(termW),
 		eventCh:          eventCh,
@@ -1002,21 +1005,45 @@ func (m *chatTUI) streamToolOutput(id, chunk string) {
 	if m.toolStreamID != id {
 		m.collapseToolOutput(m.toolStreamID)
 		m.toolStreamID = id
-		m.toolStream.Reset()
+		m.toolTail = m.toolTail[:0]
+		m.toolPartial = ""
+		m.toolLineCount = 0
 		m.toolStreamIdx = len(m.transcript)
 		m.commitLine("")
 	}
-	m.toolStream.WriteString(chunk)
-	all := strings.Split(strings.TrimRight(m.toolStream.String(), "\n"), "\n")
-	if len(all) > toolStreamTailLines {
-		all = all[len(all)-toolStreamTailLines:]
+	// Fold completed lines into the bounded tail; keep the trailing partial.
+	data := m.toolPartial + chunk
+	for {
+		i := strings.IndexByte(data, '\n')
+		if i < 0 {
+			break
+		}
+		m.pushToolLine(strings.TrimRight(data[:i], "\r"))
+		data = data[i+1:]
 	}
-	lines := make([]string, len(all))
-	for i, ln := range all {
+	m.toolPartial = data
+
+	vis := m.toolTail
+	if m.toolPartial != "" {
+		vis = append(append([]string{}, m.toolTail...), m.toolPartial)
+	}
+	lines := make([]string, len(vis))
+	for i, ln := range vis {
 		lines[i] = dim(clampPlain(ln, m.width-len([]rune(connector))))
 	}
 	m.transcript[m.toolStreamIdx] = connectorBlock(lines)
 	m.transcriptDirty = true
+}
+
+// pushToolLine appends a completed output line to the bounded tail, dropping the
+// oldest when it exceeds the window (the backing array stays ≤ window+1).
+func (m *chatTUI) pushToolLine(line string) {
+	m.toolLineCount++
+	m.toolTail = append(m.toolTail, line)
+	if len(m.toolTail) > toolStreamTailLines {
+		copy(m.toolTail, m.toolTail[1:])
+		m.toolTail = m.toolTail[:toolStreamTailLines]
+	}
 }
 
 // collapseToolOutput replaces a finished tool's live block with a dim
@@ -1026,15 +1053,17 @@ func (m *chatTUI) collapseToolOutput(id string) {
 	if m.toolStreamIdx < 0 || id == "" || m.toolStreamID != id {
 		return
 	}
-	n := len(strings.Split(strings.TrimRight(m.toolStream.String(), "\n"), "\n"))
-	if strings.TrimSpace(m.toolStream.String()) == "" {
-		n = 0
+	n := m.toolLineCount
+	if m.toolPartial != "" {
+		n++
 	}
 	m.transcript[m.toolStreamIdx] = connectorBlock([]string{dim(fmt.Sprintf("%d lines", n))})
 	m.transcriptDirty = true
 	m.toolStreamIdx = -1
 	m.toolStreamID = ""
-	m.toolStream.Reset()
+	m.toolTail = m.toolTail[:0]
+	m.toolPartial = ""
+	m.toolLineCount = 0
 }
 
 // commitReasoning closes the live thinking block: the "▎ thinking…" marker is

@@ -114,7 +114,9 @@ export interface SessionMeta {
   preview: string;
   title?: string; // user-chosen name; falls back to preview when empty
   turns: number;
-  modTime: number; // unix milliseconds
+  createdAt?: number; // unix milliseconds
+  lastActivityAt?: number; // unix milliseconds
+  modTime: number; // compatibility alias for lastActivityAt
   current: boolean;
 }
 

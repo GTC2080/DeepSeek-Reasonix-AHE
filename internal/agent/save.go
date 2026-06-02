@@ -78,20 +78,22 @@ func LoadSession(path string) (*Session, error) {
 	return s, nil
 }
 
-// SessionInfo summarises a saved session for the --resume picker: where it
-// is on disk, when it was last touched, the first user message as a preview,
-// and a rough turn count.
+// SessionInfo summarises a saved session for the --resume picker: where it is on
+// disk, when it was created/last active, the first user message as a preview, and
+// a rough turn count.
 type SessionInfo struct {
-	Path    string
-	ModTime time.Time
-	Preview string
-	Turns   int
+	Path           string
+	CreatedAt      time.Time
+	LastActivityAt time.Time
+	ModTime        time.Time // compatibility alias for LastActivityAt
+	Preview        string
+	Turns          int
 }
 
-// ListSessions returns every *.jsonl session under dir, newest first, each
-// with a preview line so the picker can show something the user recognises.
-// A missing directory is not an error — it just means there's nothing to
-// resume yet.
+// ListSessions returns every *.jsonl session under dir, most-recently-active
+// first, each with a preview line so the picker can show something the user
+// recognises. A missing directory is not an error — it just means there's
+// nothing to resume yet.
 func ListSessions(dir string) ([]SessionInfo, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -117,15 +119,30 @@ func ListSessions(dir string) ([]SessionInfo, error) {
 			// or the resume picker.
 			continue
 		}
+		createdAt := info.ModTime()
+		lastActivityAt := info.ModTime()
+		if meta, ok, err := LoadBranchMeta(full); err == nil && ok {
+			if !meta.CreatedAt.IsZero() {
+				createdAt = meta.CreatedAt
+			}
+			if !meta.UpdatedAt.IsZero() {
+				lastActivityAt = meta.UpdatedAt
+			}
+		}
 		out = append(out, SessionInfo{
-			Path:    full,
-			ModTime: info.ModTime(),
-			Preview: preview,
-			Turns:   turns,
+			Path:           full,
+			CreatedAt:      createdAt,
+			LastActivityAt: lastActivityAt,
+			ModTime:        lastActivityAt,
+			Preview:        preview,
+			Turns:          turns,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {
-		return out[i].ModTime.After(out[j].ModTime)
+		if out[i].LastActivityAt.Equal(out[j].LastActivityAt) {
+			return out[i].Path < out[j].Path
+		}
+		return out[i].LastActivityAt.After(out[j].LastActivityAt)
 	})
 	return out, nil
 }

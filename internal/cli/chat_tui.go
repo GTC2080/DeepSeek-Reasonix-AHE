@@ -2161,8 +2161,10 @@ func (m *chatTUI) ingestEvent(e event.Event) {
 		m.chooser = newChooser(e.Ask)
 
 	case event.TurnDone:
-		// The turn settled — freeze anything still streaming, autosave, surface a
-		// real error, and gate a plan-mode proposal on the user's approval.
+		// The turn settled — freeze anything still streaming, surface a real error,
+		// and gate a plan-mode proposal on the user's approval. Autosave already
+		// happened in Controller so every frontend shares the same activity-time
+		// semantics.
 		m.commitReasoning()
 		m.commitPending()
 		// The bubble was echoed on Enter and an un-sent turn is swallowed above
@@ -2171,7 +2173,6 @@ func (m *chatTUI) ingestEvent(e event.Event) {
 		m.confirmBubbleSent()
 		m.state = tuiIdle
 		m.clearSubmittedPastes()
-		_ = m.ctrl.Snapshot() // best-effort; never the user's problem mid-chat
 		if e.Err != nil && e.Err.Error() != "" && !strings.Contains(e.Err.Error(), "context canceled") {
 			m.commitLine(wrapForViewport(i18n.M.ErrorPrefix+" "+e.Err.Error(), m.width, lipgloss.Color("3")))
 		}

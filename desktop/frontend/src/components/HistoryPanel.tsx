@@ -41,7 +41,7 @@ export function HistoryPanel({
   // (Today / Yesterday / a date) while preserving that order.
   const groups: { label: string; items: SessionMeta[] }[] = [];
   for (const s of sessions) {
-    const label = dayLabel(s.modTime);
+    const label = dayLabel(sessionActivityTime(s));
     const last = groups[groups.length - 1];
     if (last && last.label === label) last.items.push(s);
     else groups.push({ label, items: [s] });
@@ -85,7 +85,7 @@ export function HistoryPanel({
                           {s.current && <span className="hist-item__badge">{tr("history.current")}</span>}
                           <span>{tr(s.turns === 1 ? "history.turnOne" : "history.turnOther", { n: s.turns })}</span>
                           <span>·</span>
-                          <span>{timeLabel(s.modTime)}</span>
+                          <span>{timeLabel(sessionActivityTime(s))}</span>
                         </div>
                       </button>
                     )}
@@ -130,6 +130,10 @@ export function HistoryPanel({
         </div>
     </ResizableDrawer>
   );
+}
+
+function sessionActivityTime(session: SessionMeta): number {
+  return session.lastActivityAt ?? session.modTime;
 }
 
 // dayLabel buckets a timestamp into "Today", "Yesterday", or a locale date. It's

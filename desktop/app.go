@@ -337,12 +337,14 @@ func (a *App) SummarizeUpTo(turn int) error {
 
 // SessionMeta summarises one saved session for the history panel.
 type SessionMeta struct {
-	Path    string `json:"path"`
-	Preview string `json:"preview"`         // first user message
-	Title   string `json:"title,omitempty"` // user-chosen name, when set (overrides preview)
-	Turns   int    `json:"turns"`
-	ModTime int64  `json:"modTime"` // unix milliseconds, for the frontend to group/format
-	Current bool   `json:"current"`
+	Path           string `json:"path"`
+	Preview        string `json:"preview"`         // first user message
+	Title          string `json:"title,omitempty"` // user-chosen name, when set (overrides preview)
+	Turns          int    `json:"turns"`
+	CreatedAt      int64  `json:"createdAt"`      // unix milliseconds
+	LastActivityAt int64  `json:"lastActivityAt"` // unix milliseconds
+	ModTime        int64  `json:"modTime"`        // compatibility alias for lastActivityAt
+	Current        bool   `json:"current"`
 }
 
 type WorkspaceMeta struct {
@@ -371,12 +373,14 @@ func (a *App) ListSessions() []SessionMeta {
 	out := make([]SessionMeta, 0, len(infos))
 	for _, s := range infos {
 		out = append(out, SessionMeta{
-			Path:    s.Path,
-			Preview: s.Preview,
-			Title:   titles[filepath.Base(s.Path)],
-			Turns:   s.Turns,
-			ModTime: s.ModTime.UnixMilli(),
-			Current: s.Path == cur,
+			Path:           s.Path,
+			Preview:        s.Preview,
+			Title:          titles[filepath.Base(s.Path)],
+			Turns:          s.Turns,
+			CreatedAt:      s.CreatedAt.UnixMilli(),
+			LastActivityAt: s.LastActivityAt.UnixMilli(),
+			ModTime:        s.LastActivityAt.UnixMilli(),
+			Current:        s.Path == cur,
 		})
 	}
 	return out

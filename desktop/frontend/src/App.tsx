@@ -121,6 +121,10 @@ function sessionTime(ms: number): string {
   return new Date(ms).toLocaleDateString([], { month: "short", day: "numeric" });
 }
 
+function sessionActivityTime(session: SessionMeta): number {
+  return session.lastActivityAt ?? session.modTime;
+}
+
 export default function App() {
   const {
     state,
@@ -605,7 +609,7 @@ export default function App() {
                     <span className="sidebar-session__body">
                       <span className="sidebar-session__title">{sessionTitle(session, t("history.emptySession"))}</span>
                       <span className="sidebar-session__meta">
-                        {session.current ? t("history.current") : sessionTime(session.modTime)}
+                        {session.current ? t("history.current") : sessionTime(sessionActivityTime(session))}
                       </span>
                     </span>
                   </button>

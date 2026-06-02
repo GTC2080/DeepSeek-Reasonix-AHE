@@ -2,20 +2,120 @@ package control
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
+	"time"
 
+	"reasonix/internal/agent"
 	"reasonix/internal/event"
+	"reasonix/internal/provider"
 )
 
 type typedNilControllerSink struct{}
 
 func (*typedNilControllerSink) Emit(event.Event) {}
 
+type appendingRunner struct {
+	session *agent.Session
+}
+
+func (r appendingRunner) Run(_ context.Context, input string) error {
+	r.session.Add(provider.Message{Role: provider.RoleUser, Content: input})
+	return nil
+}
+
 func TestNewTreatsTypedNilSinkAsDiscard(t *testing.T) {
 	var sink *typedNilControllerSink
 	c := New(Options{Sink: sink})
 
 	c.notice("typed nil sink should not panic")
+}
+
+func TestRunTurnSnapshotsActivityWhenTranscriptChanges(t *testing.T) {
+	dir := t.TempDir()
+	sess := agent.NewSession("sys")
+	exec := agent.New(nil, nil, sess, agent.Options{}, event.Discard)
+	path := filepath.Join(dir, "session.jsonl")
+	c := New(Options{Runner: appendingRunner{session: sess}, Executor: exec, SessionDir: dir, SessionPath: path, Label: "test"})
+
+	if err := c.runTurn(context.Background(), "hello"); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := agent.LoadSession(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.Messages) != 2 {
+		t.Fatalf("saved messages = %d, want system + user", len(loaded.Messages))
+	}
+	meta, ok, err := agent.LoadBranchMeta(path)
+	if err != nil || !ok {
+		t.Fatalf("load activity meta ok=%v err=%v", ok, err)
+	}
+	if meta.UpdatedAt.IsZero() {
+		t.Fatal("activity meta should be marked")
+	}
+}
+
+func TestSnapshotDoesNotRefreshSessionActivity(t *testing.T) {
+	dir := t.TempDir()
+	sess := agent.NewSession("sys")
+	sess.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	exec := agent.New(nil, nil, sess, agent.Options{}, event.Discard)
+	c := New(Options{Executor: exec, SessionDir: dir, Label: "test"})
+	c.SetSessionPath(filepath.Join(dir, "session.jsonl"))
+
+	if err := c.SnapshotActivity(); err != nil {
+		t.Fatal(err)
+	}
+	first, ok, err := agent.LoadBranchMeta(c.SessionPath())
+	if err != nil || !ok {
+		t.Fatalf("load initial meta ok=%v err=%v", ok, err)
+	}
+
+	time.Sleep(10 * time.Millisecond)
+	sess.Add(provider.Message{Role: provider.RoleAssistant, Content: "saved without activity"})
+	if err := c.Snapshot(); err != nil {
+		t.Fatal(err)
+	}
+	second, ok, err := agent.LoadBranchMeta(c.SessionPath())
+	if err != nil || !ok {
+		t.Fatalf("load second meta ok=%v err=%v", ok, err)
+	}
+	if !second.UpdatedAt.Equal(first.UpdatedAt) {
+		t.Fatalf("Snapshot refreshed activity: first=%s second=%s", first.UpdatedAt, second.UpdatedAt)
+	}
+}
+
+func TestSnapshotActivityRefreshesSessionActivity(t *testing.T) {
+	dir := t.TempDir()
+	sess := agent.NewSession("sys")
+	sess.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	exec := agent.New(nil, nil, sess, agent.Options{}, event.Discard)
+	c := New(Options{Executor: exec, SessionDir: dir, Label: "test"})
+	c.SetSessionPath(filepath.Join(dir, "session.jsonl"))
+
+	if err := c.SnapshotActivity(); err != nil {
+		t.Fatal(err)
+	}
+	first, _, err := agent.LoadBranchMeta(c.SessionPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	time.Sleep(10 * time.Millisecond)
+	sess.Add(provider.Message{Role: provider.RoleAssistant, Content: "activity"})
+	if err := c.SnapshotActivity(); err != nil {
+		t.Fatal(err)
+	}
+	second, _, err := agent.LoadBranchMeta(c.SessionPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !second.UpdatedAt.After(first.UpdatedAt) {
+		t.Fatalf("SnapshotActivity did not refresh activity: first=%s second=%s", first.UpdatedAt, second.UpdatedAt)
+	}
 }
 
 // approvalIDs returns a Controller whose Sink forwards each ApprovalRequest's ID

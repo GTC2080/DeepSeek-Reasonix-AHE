@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -121,6 +122,61 @@ func TestListSessionsOrdersByMTime(t *testing.T) {
 	}
 	if got[0].Turns != 1 || got[0].Preview != "preview for b.jsonl" {
 		t.Errorf("preview/turns wrong on newest: turns=%d preview=%q", got[0].Turns, got[0].Preview)
+	}
+}
+
+func TestListSessionsOrdersByLastActivityMeta(t *testing.T) {
+	dir := t.TempDir()
+	aPath := filepath.Join(dir, "a.jsonl")
+	bPath := filepath.Join(dir, "b.jsonl")
+	for _, path := range []string{aPath, bPath} {
+		s := NewSession("")
+		s.Add(provider.Message{Role: provider.RoleUser, Content: "preview for " + filepath.Base(path)})
+		if err := s.Save(path); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	now := time.Now().UTC()
+	olderActivity := now.Add(-2 * time.Hour)
+	newerActivity := now.Add(-1 * time.Hour)
+	writeBranchMeta(t, aPath, now.Add(-24*time.Hour), newerActivity)
+	writeBranchMeta(t, bPath, now.Add(-24*time.Hour), olderActivity)
+	if err := touch(aPath, now.Add(-3*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := touch(bPath, now); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := ListSessions(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("len = %d, want 2", len(got))
+	}
+	if got[0].Path != aPath {
+		t.Fatalf("first entry = %s, want activity-newer a.jsonl despite older file mtime", got[0].Path)
+	}
+	if !got[0].LastActivityAt.Equal(newerActivity) || !got[0].ModTime.Equal(newerActivity) {
+		t.Fatalf("activity fields = %s / %s, want %s", got[0].LastActivityAt, got[0].ModTime, newerActivity)
+	}
+}
+
+func writeBranchMeta(t *testing.T, path string, createdAt, updatedAt time.Time) {
+	t.Helper()
+	meta := BranchMeta{
+		ID:        BranchID(path),
+		CreatedAt: createdAt,
+		UpdatedAt: updatedAt,
+	}
+	b, err := json.Marshal(meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(BranchMetaPath(path), append(b, '\n'), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
 

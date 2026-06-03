@@ -2536,6 +2536,9 @@ func (m *chatTUI) runSlashCommand(input string) tea.Cmd {
 	case "/skill", "/skills":
 		m.echoLocalCommand(input)
 		m.runSkillSubcommand(input)
+		if m.pendingModelSwitch != nil {
+			return m.pendingModelSwitch
+		}
 	case "/hooks":
 		m.echoLocalCommand(input)
 		m.runHooksSubcommand(input)

@@ -229,6 +229,7 @@ export interface SkillView {
   description: string;
   scope: string;
   runAs: string;
+  enabled: boolean;
 }
 export interface SkillRootSkillView {
   name: string;

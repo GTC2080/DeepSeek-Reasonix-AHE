@@ -230,7 +230,10 @@ func TestExecuteBatchParallelReadOnly(t *testing.T) {
 // own position in the provider-ordered batch: read-only runs before and after it
 // may still parallelise within their contiguous segments.
 func TestExecuteBatchSegmentsAroundWrites(t *testing.T) {
-	const delay = 40 * time.Millisecond
+	// A larger per-call delay keeps fixed scheduler jitter on loaded CI a small
+	// fraction of the segment time, so the tight relative bound below stays
+	// reliable instead of being widened toward the serial floor.
+	const delay = 100 * time.Millisecond
 	reg := tool.NewRegistry()
 	reg.Add(fakeTool{name: "ro1", readOnly: true, delay: delay})
 	reg.Add(fakeTool{name: "ro2", readOnly: true, delay: delay})
@@ -260,10 +263,9 @@ func TestExecuteBatchSegmentsAroundWrites(t *testing.T) {
 		}
 	}
 	// Desired shape is roughly 3*delay: (ro1|ro2), then rw, then (ro3|ro4).
-	// Old all-serial behaviour is roughly 5*delay and should fail this bound,
-	// while slower CI runners still get enough scheduler slack.
-	if elapsed >= 5*delay {
-		t.Errorf("mixed batch took %v (>= %v) — read-only segments did not parallelise", elapsed, 5*delay)
+	// Old all-serial behaviour is roughly 5*delay and should fail this bound.
+	if elapsed >= 4*delay {
+		t.Errorf("mixed batch took %v (>= %v) — read-only segments did not parallelise", elapsed, 4*delay)
 	}
 	if elapsed < 2*delay {
 		t.Errorf("mixed batch took only %v — write call appears to have overlapped a read-only segment", elapsed)

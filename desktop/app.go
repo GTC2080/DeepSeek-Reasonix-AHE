@@ -1318,7 +1318,7 @@ func (a *App) UpdateMCPServer(name string, in MCPServerInput) error {
 	if !sessionDisabled && (wasConnected || wasFailed || updated.ResolvedTier() != "lazy") {
 		if _, err := a.ctrl.ConnectConfiguredMCPServer(name); err != nil {
 			recordMCPFailure(a.ctrl, updated, err)
-			return fmt.Errorf("saved config, but reconnect failed: %w", err)
+			return nil
 		}
 	}
 	return nil

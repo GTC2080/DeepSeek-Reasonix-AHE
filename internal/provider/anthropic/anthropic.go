@@ -81,7 +81,7 @@ func New(cfg provider.Config) (provider.Provider, error) {
 
 func newHTTPClient(cfg provider.Config) (*http.Client, error) {
 	spec, _ := cfg.Extra["proxy_spec"].(netclient.ProxySpec)
-	return netclient.NewHTTPClient(spec, 0, netclient.TransportOptions{})
+	return netclient.NewHTTPClient(spec, netclient.TransportOptions{})
 }
 
 type client struct {

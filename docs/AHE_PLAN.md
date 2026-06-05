@@ -1,6 +1,6 @@
 # Reasonix-AHE v0.1 本地启动计划
 
-> **项目性质**：DeepSeek-Reasonix-AHE 是基于 [esengine/DeepSeek-Reasonix](https://github.com/esengine/DeepSeek-Reasonix) 的实验性二次开发项目，用于本地 Agentic Harness Engineering 能力探索，不代表上游官方发布版本。
+> **项目性质**：DeepSeek-Reasonix-AHE 是基于 [esengine/DeepSeek-Reasonix](https://github.com/esengine/DeepSeek-Reasonix) 的实验性二次开发项目，围绕论文 [Agentic Harness Engineering: Observability-Driven Automatic Evolution of Coding-Agent Harnesses](https://arxiv.org/abs/2604.25850) 进行设计：Reasonix 作为 coding-agent 基座，AHE 作为升级框架，不代表上游官方发布版本。
 
 本计划记录 Reasonix-AHE 的第一版路线：先在本地建立可观测、缓存契约、snapshot、eval、evidence、proposal、GC / quota 等实验底座，不急着做自动 self-evolution。
 

@@ -6,10 +6,27 @@ Build a cache-preserving Agentic Harness Engineering substrate for Reasonix.
 
 DeepSeek-Reasonix-AHE is an experimental derivative and secondary-development
 project based on [esengine/DeepSeek-Reasonix](https://github.com/esengine/DeepSeek-Reasonix).
+It is explicitly centered on
+[Agentic Harness Engineering: Observability-Driven Automatic Evolution of
+Coding-Agent Harnesses](https://arxiv.org/abs/2604.25850): Reasonix remains the
+base coding-agent substrate, while AHE is the upgrade framework that makes the
+harness observable, evaluable, revertible, and incrementally evolvable.
 
 Reasonix-AHE v0.1 is a local experiment layer for observability, cache
 contracts, harness snapshots, smoke evaluation, and evidence reports. It is not
 an automatic self-modification system.
+
+## Paper Alignment
+
+Reasonix-AHE maps the paper's AHE loop onto a local Reasonix workflow:
+
+- Component observability: harness source, snapshots, lock hashes, and proposal
+  manifests make editable harness components explicit and revertible.
+- Experience observability: traces, eval artifacts, cache reports, and evidence
+  distillation turn raw agent runs into reviewable local evidence.
+- Decision observability: proposal manifests, apply results, acceptance gates,
+  lifecycle status, pins, and GC records pair every harness change with stated
+  expectations and follow-up verification.
 
 ## Non-goals for v0.1
 

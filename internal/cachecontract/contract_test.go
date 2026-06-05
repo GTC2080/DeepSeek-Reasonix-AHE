@@ -104,6 +104,18 @@ func TestCompareDetectsToolSchemaDrift(t *testing.T) {
 	}
 }
 
+func TestNewContractWithHarnessSnapshotRecordsHarnessIdentity(t *testing.T) {
+	base := Capture("system", nil, 1)
+	contract := NewContractWithHarness("sess-1", base, time.Unix(123, 0).UTC(), "h-0001", "sha256:harness-prefix")
+
+	if contract.HarnessSnapshot != "h-0001" {
+		t.Fatalf("HarnessSnapshot = %q, want h-0001", contract.HarnessSnapshot)
+	}
+	if contract.HarnessStablePrefixHash != "sha256:harness-prefix" {
+		t.Fatalf("HarnessStablePrefixHash = %q, want sha256:harness-prefix", contract.HarnessStablePrefixHash)
+	}
+}
+
 func TestCompareIgnoresNonContractRewriteVersion(t *testing.T) {
 	base := Capture("system", nil, 1)
 	contract := NewContract("sess-1", base, time.Unix(123, 0).UTC())

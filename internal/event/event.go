@@ -224,13 +224,14 @@ type CacheContractShape struct {
 // emits it before the provider request and also emits a warning Notice; v0.1
 // never blocks the run on this event.
 type CacheContractViolationPayload struct {
-	SessionID       string             `json:"session_id"`
-	HarnessSnapshot string             `json:"harness_snapshot,omitempty"`
-	Turn            int                `json:"turn"`
-	Step            int                `json:"step"`
-	Expected        CacheContractShape `json:"expected"`
-	Actual          CacheContractShape `json:"actual"`
-	Reasons         []string           `json:"reasons"`
+	SessionID               string             `json:"session_id"`
+	HarnessSnapshot         string             `json:"harness_snapshot,omitempty"`
+	HarnessStablePrefixHash string             `json:"harness_stable_prefix_hash,omitempty"`
+	Turn                    int                `json:"turn"`
+	Step                    int                `json:"step"`
+	Expected                CacheContractShape `json:"expected"`
+	Actual                  CacheContractShape `json:"actual"`
+	Reasons                 []string           `json:"reasons"`
 }
 
 // Event is one increment in a turn's event stream. Read the field(s) documented

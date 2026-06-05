@@ -24,6 +24,7 @@ import (
 	"reasonix/internal/config"
 	"reasonix/internal/control"
 	"reasonix/internal/event"
+	"reasonix/internal/harness"
 	"reasonix/internal/hook"
 	"reasonix/internal/instruction"
 	"reasonix/internal/jobs"
@@ -159,6 +160,15 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		return nil, err
 	}
 
+	activeHarness, err := harness.NewLayout(filepath.Join(root, harness.RootDir)).LoadActive()
+	if err != nil {
+		return nil, err
+	}
+	if activeHarness.SnapshotID != "" {
+		sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo,
+			Text: fmt.Sprintf("active harness %s loaded", activeHarness.SnapshotID)})
+	}
+
 	sysPrompt, err := cfg.ResolveSystemPrompt()
 	if err != nil {
 		return nil, err
@@ -193,6 +203,9 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	skills := skillStore.List()
 	allSkills := skill.New(skill.Options{ProjectRoot: root, CustomPaths: cfg.SkillCustomPaths(), Stderr: io.Discard}).List()
 	sysPrompt = skill.ApplyIndex(sysPrompt, skills)
+	if strings.TrimSpace(activeHarness.PromptOverlay) != "" {
+		sysPrompt += "\n\n" + activeHarness.PromptOverlay
+	}
 
 	reg := tool.NewRegistry()
 	bashSpec := sandbox.Spec{Mode: cfg.BashMode(), WriteRoots: cfg.WriteRootsForRoot(root), Network: cfg.Sandbox.Network}
@@ -464,18 +477,20 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 
 	execSess := agent.NewSession(sysPrompt)
 	executor := agent.New(execProv, reg, execSess, agent.Options{
-		MaxSteps:          maxSteps,
-		Temperature:       cfg.Agent.Temperature,
-		Pricing:           entry.Price,
-		Gate:              headlessGate,
-		Hooks:             hookRunner,
-		Jobs:              jm,
-		ProjectChecks:     projectChecks,
-		ContextWindow:     entry.ContextWindow,
-		SoftCompactRatio:  cfg.Agent.SoftCompactRatio,
-		CompactRatio:      cfg.Agent.CompactRatio,
-		CompactForceRatio: cfg.Agent.CompactForceRatio,
-		ArchiveDir:        config.ArchiveDir(),
+		MaxSteps:                maxSteps,
+		Temperature:             cfg.Agent.Temperature,
+		Pricing:                 entry.Price,
+		Gate:                    headlessGate,
+		Hooks:                   hookRunner,
+		Jobs:                    jm,
+		ProjectChecks:           projectChecks,
+		HarnessSnapshot:         activeHarness.SnapshotID,
+		HarnessStablePrefixHash: activeHarness.Lock.StablePrefixHash,
+		ContextWindow:           entry.ContextWindow,
+		SoftCompactRatio:        cfg.Agent.SoftCompactRatio,
+		CompactRatio:            cfg.Agent.CompactRatio,
+		CompactForceRatio:       cfg.Agent.CompactForceRatio,
+		ArchiveDir:              config.ArchiveDir(),
 	}, sink)
 
 	// Custom slash commands (.reasonix/commands + user dir). Best-effort: a malformed
@@ -505,6 +520,9 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		})
 	}
 	reg.Add(command.NewSlashCommandTool(slashEntries))
+	if len(activeHarness.ToolDescriptions) > 0 {
+		reg.ApplySchemaDescriptions(activeHarness.ToolDescriptions)
+	}
 
 	var runner agent.Runner = executor
 	label := entry.Model

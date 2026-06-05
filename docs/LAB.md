@@ -18,6 +18,17 @@ Generated local artifacts live under `.reasonix-ahe/` and
 `.reasonix-harness/`. These directories are for local experiment state and
 should not be pushed to the upstream repository.
 
+## Active Harness
+
+`reasonix lab harness snapshot activate <snapshot-id>` selects the snapshot
+that `reasonix run` and `reasonix chat` load at session start. When an active
+snapshot has a `source/` copy, Reasonix-AHE injects its prompt, middleware, and
+routing text into the cache-stable system prompt, and applies
+`tool_descriptions/<tool>.md` as provider-facing tool descriptions.
+
+The active harness is read once when the session is built. Changing
+`.reasonix-harness/active` does not mutate an already-running session.
+
 ## Cache Reports
 
 `reasonix lab cache-report <trace.jsonl>` reads one trace JSONL file and
@@ -69,3 +80,15 @@ review with a human-readable reason.
 `reasonix lab harness snapshot pin <snapshot-id>` and `unpin <snapshot-id>`
 manage `.reasonix-harness/pinned`. Pinned snapshots are protected by
 `reasonix lab gc --dry-run`.
+
+## Promote and Rollback
+
+`reasonix lab harness snapshot promote <snapshot-id> [--activate] [--pin]` and
+`rollback <snapshot-id> [--activate] [--pin]` copy a snapshot's `source/` back
+to `.reasonix-harness/source`. Before replacing the editable source tree, the
+command creates a safety snapshot of the current source and writes an action
+result under `.reasonix-ahe/harness-actions/`.
+
+`promote` and `rollback` have the same file semantics in v0.1; the command name
+records the operator's intent. Neither command changes an already-running
+session.

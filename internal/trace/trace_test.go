@@ -150,16 +150,20 @@ func TestSinkForwardsAndWritesSessionLifecycle(t *testing.T) {
 func TestSinkWritesSessionStartHarnessSnapshot(t *testing.T) {
 	w := &memoryWriter{}
 	s := NewSink(event.Discard, w, Options{
-		Mode:            ModeMetadata,
-		RunID:           "run",
-		SessionID:       "sess",
-		HarnessSnapshot: "h-0001",
-		Now:             fixedClock(),
+		Mode:                    ModeMetadata,
+		RunID:                   "run",
+		SessionID:               "sess",
+		HarnessSnapshot:         "h-0001",
+		HarnessStablePrefixHash: "sha256:harness-prefix",
+		Now:                     fixedClock(),
 	})
 
 	start := firstType(t, w.events, "session_start")
 	if got := start.Data["harness_snapshot"]; got != "h-0001" {
 		t.Fatalf("harness_snapshot = %#v, want h-0001", got)
+	}
+	if got := start.Data["harness_stable_prefix_hash"]; got != "sha256:harness-prefix" {
+		t.Fatalf("harness_stable_prefix_hash = %#v, want sha256:harness-prefix", got)
 	}
 	if err := s.Close(nil); err != nil {
 		t.Fatalf("Close: %v", err)
@@ -198,9 +202,10 @@ func TestSinkMapsCacheContractViolation(t *testing.T) {
 	s.Emit(event.Event{
 		Kind: event.CacheContractViolation,
 		CacheContract: event.CacheContractViolationPayload{
-			SessionID:       "sess",
-			HarnessSnapshot: "h-0001",
-			Step:            2,
+			SessionID:               "sess",
+			HarnessSnapshot:         "h-0001",
+			HarnessStablePrefixHash: "sha256:harness-prefix",
+			Step:                    2,
 			Expected: event.CacheContractShape{
 				SystemPromptHash: "sha256:system",
 				ToolSchemaHash:   "sha256:old-tools",
@@ -221,6 +226,9 @@ func TestSinkMapsCacheContractViolation(t *testing.T) {
 	}
 	if got := ev.Data["harness_snapshot"]; got != "h-0001" {
 		t.Fatalf("harness_snapshot = %#v, want h-0001", got)
+	}
+	if got := ev.Data["harness_stable_prefix_hash"]; got != "sha256:harness-prefix" {
+		t.Fatalf("harness_stable_prefix_hash = %#v, want sha256:harness-prefix", got)
 	}
 	if got := ev.Data["step"]; got != 2 {
 		t.Fatalf("step = %#v, want 2", got)

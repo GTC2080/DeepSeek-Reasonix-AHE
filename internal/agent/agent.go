@@ -152,11 +152,12 @@ type Agent struct {
 	// cacheContract is the first provider request's stable-prefix baseline for
 	// this local session. Drift is warning-only in v0.1 but typed so trace/eval
 	// tooling can attribute prompt-cache misses.
-	cacheContractSessionID       string
-	cacheContractHarnessSnapshot string
-	cacheContract                cachecontract.Contract
-	haveCacheContract            bool
-	userTurn                     int
+	cacheContractSessionID               string
+	cacheContractHarnessSnapshot         string
+	cacheContractHarnessStablePrefixHash string
+	cacheContract                        cachecontract.Contract
+	haveCacheContract                    bool
+	userTurn                             int
 
 	// planMode, when true, refuses any tool call whose ReadOnly() is false.
 	// The system prompt and tool list never change with the toggle so the
@@ -287,7 +288,6 @@ func (a *Agent) SetSession(s *Session) {
 	defer a.sessMu.Unlock()
 	a.session = s
 	a.cacheContractSessionID = cachecontract.NewSessionID()
-	a.cacheContractHarnessSnapshot = activeHarnessSnapshot()
 	a.cacheContract = cachecontract.Contract{}
 	a.haveCacheContract = false
 	a.lastPrefixShape = PrefixShape{}
@@ -350,6 +350,12 @@ type Options struct {
 
 	// ProjectChecks are host-observable structured checks extracted during boot.
 	ProjectChecks []instruction.VerifyCheck
+
+	// HarnessSnapshot records the active AHE harness snapshot loaded at session
+	// start. It is metadata for cache-contract/trace attribution; the actual
+	// prompt/tool injection happens before New receives the session and registry.
+	HarnessSnapshot         string
+	HarnessStablePrefixHash string
 }
 
 // New constructs an Agent. MaxSteps <= 0 means no cap — the run loop continues
@@ -380,27 +386,33 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
 	if nilutil.IsNil(hooks) {
 		hooks = nil
 	}
+	harnessSnapshot := opts.HarnessSnapshot
+	harnessStablePrefixHash := opts.HarnessStablePrefixHash
+	if harnessSnapshot == "" && harnessStablePrefixHash == "" {
+		harnessSnapshot, harnessStablePrefixHash = activeHarnessMetadata()
+	}
 	return &Agent{
-		prov:                         prov,
-		tools:                        tools,
-		session:                      session,
-		maxSteps:                     opts.MaxSteps,
-		temperature:                  opts.Temperature,
-		pricing:                      opts.Pricing,
-		sink:                         sink,
-		cacheContractSessionID:       cachecontract.NewSessionID(),
-		cacheContractHarnessSnapshot: activeHarnessSnapshot(),
-		gate:                         gate,
-		hooks:                        hooks,
-		jobs:                         opts.Jobs,
-		evidence:                     evidence.NewLedger(),
-		projectChecks:                append([]instruction.VerifyCheck(nil), opts.ProjectChecks...),
-		contextWindow:                opts.ContextWindow,
-		softCompactRatio:             opts.SoftCompactRatio,
-		compactRatio:                 opts.CompactRatio,
-		compactForceRatio:            opts.CompactForceRatio,
-		recentKeep:                   opts.RecentKeep,
-		archiveDir:                   opts.ArchiveDir,
+		prov:                                 prov,
+		tools:                                tools,
+		session:                              session,
+		maxSteps:                             opts.MaxSteps,
+		temperature:                          opts.Temperature,
+		pricing:                              opts.Pricing,
+		sink:                                 sink,
+		cacheContractSessionID:               cachecontract.NewSessionID(),
+		cacheContractHarnessSnapshot:         harnessSnapshot,
+		cacheContractHarnessStablePrefixHash: harnessStablePrefixHash,
+		gate:                                 gate,
+		hooks:                                hooks,
+		jobs:                                 opts.Jobs,
+		evidence:                             evidence.NewLedger(),
+		projectChecks:                        append([]instruction.VerifyCheck(nil), opts.ProjectChecks...),
+		contextWindow:                        opts.ContextWindow,
+		softCompactRatio:                     opts.SoftCompactRatio,
+		compactRatio:                         opts.CompactRatio,
+		compactForceRatio:                    opts.CompactForceRatio,
+		recentKeep:                           opts.RecentKeep,
+		archiveDir:                           opts.ArchiveDir,
 	}
 }
 
@@ -692,7 +704,10 @@ func (a *Agent) capturePrefixShape(schemas []provider.ToolSchema) PrefixShape {
 func (a *Agent) checkCacheContract(prefixShape PrefixShape, userTurn, step int) {
 	actual := cacheContractShape(prefixShape)
 	if !a.haveCacheContract {
-		a.cacheContract = cachecontract.NewContract(a.cacheContractSessionID, actual, time.Now())
+		a.cacheContract = cachecontract.NewContractWithHarness(
+			a.cacheContractSessionID, actual, time.Now(),
+			a.cacheContractHarnessSnapshot, a.cacheContractHarnessStablePrefixHash,
+		)
 		a.haveCacheContract = true
 		return
 	}
@@ -701,13 +716,14 @@ func (a *Agent) checkCacheContract(prefixShape PrefixShape, userTurn, step int) 
 		return
 	}
 	payload := event.CacheContractViolationPayload{
-		SessionID:       violation.SessionID,
-		HarnessSnapshot: a.cacheContractHarnessSnapshot,
-		Turn:            userTurn,
-		Step:            step,
-		Expected:        eventCacheContractShape(violation.Expected),
-		Actual:          eventCacheContractShape(violation.Actual),
-		Reasons:         append([]string(nil), violation.Reasons...),
+		SessionID:               violation.SessionID,
+		HarnessSnapshot:         a.cacheContractHarnessSnapshot,
+		HarnessStablePrefixHash: a.cacheContractHarnessStablePrefixHash,
+		Turn:                    userTurn,
+		Step:                    step,
+		Expected:                eventCacheContractShape(violation.Expected),
+		Actual:                  eventCacheContractShape(violation.Actual),
+		Reasons:                 append([]string(nil), violation.Reasons...),
 	}
 	a.sink.Emit(event.Event{Kind: event.CacheContractViolation, CacheContract: payload})
 	a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: cacheContractWarning(violation.Reasons)})
@@ -738,12 +754,19 @@ func cacheContractWarning(reasons []string) string {
 	return "cache contract drift: " + strings.Join(reasons, ", ") + " changed"
 }
 
-func activeHarnessSnapshot() string {
+func activeHarnessMetadata() (string, string) {
 	active, err := harness.DefaultLayout().Active()
 	if err != nil {
-		return ""
+		return "", ""
 	}
-	return active
+	if active == "" {
+		return "", ""
+	}
+	lock, err := harness.DefaultLayout().Inspect(active)
+	if err != nil {
+		return active, ""
+	}
+	return active, lock.StablePrefixHash
 }
 
 func (a *Agent) systemPrompt() string {

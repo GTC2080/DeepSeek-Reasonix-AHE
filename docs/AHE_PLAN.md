@@ -257,7 +257,7 @@ Build a cache-preserving AHE substrate for Reasonix.
 
 - No automatic self-modification of Reasonix core.
 - No automatic merge of evolution proposals.
-- No live-session harness mutation.
+- No mid-session harness mutation after session-start injection.
 - No dynamic injection of eval evidence into the live model prefix.
 
 ## Invariants

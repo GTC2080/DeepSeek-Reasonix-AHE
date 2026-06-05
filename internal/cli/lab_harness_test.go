@@ -93,6 +93,59 @@ func TestRunDispatchesLabHarnessLifecycle(t *testing.T) {
 	}
 }
 
+func TestRunDispatchesHarnessSnapshotPromote(t *testing.T) {
+	dir := tempChdir(t)
+
+	if rc := Run([]string{"lab", "harness", "init"}, "test-version"); rc != 0 {
+		t.Fatalf("init rc = %d, want 0", rc)
+	}
+	sourceFile := filepath.Join(dir, ".reasonix-harness", "source", "prompts", "system.md")
+	if err := os.WriteFile(sourceFile, []byte("base\n"), 0o644); err != nil {
+		t.Fatalf("write base source: %v", err)
+	}
+	if rc := Run([]string{"lab", "harness", "snapshot", "create"}, "test-version"); rc != 0 {
+		t.Fatalf("snapshot create rc = %d, want 0", rc)
+	}
+	if err := os.WriteFile(sourceFile, []byte("current\n"), 0o644); err != nil {
+		t.Fatalf("write current source: %v", err)
+	}
+
+	out := captureStdout(t, func() {
+		if rc := Run([]string{"lab", "harness", "snapshot", "promote", "h-0001", "--activate", "--pin"}, "test-version"); rc != 0 {
+			t.Fatalf("promote rc = %d, want 0", rc)
+		}
+	})
+	for _, want := range []string{"promoted\th-0001", "safety_snapshot\th-0002", "action_result\t"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("promote output = %q, want %q", out, want)
+		}
+	}
+	got, err := os.ReadFile(sourceFile)
+	if err != nil {
+		t.Fatalf("read promoted source: %v", err)
+	}
+	if string(got) != "base\n" {
+		t.Fatalf("promoted source = %q, want base snapshot", got)
+	}
+	active, err := os.ReadFile(filepath.Join(dir, ".reasonix-harness", "active"))
+	if err != nil {
+		t.Fatalf("read active: %v", err)
+	}
+	if strings.TrimSpace(string(active)) != "h-0001" {
+		t.Fatalf("active = %q, want h-0001", active)
+	}
+	pinned, err := os.ReadFile(filepath.Join(dir, ".reasonix-harness", "pinned"))
+	if err != nil {
+		t.Fatalf("read pinned: %v", err)
+	}
+	if !strings.Contains(string(pinned), "h-0001") {
+		t.Fatalf("pinned = %q, want h-0001", pinned)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".reasonix-ahe", "harness-actions")); err != nil {
+		t.Fatalf("harness action artifact root missing: %v", err)
+	}
+}
+
 func TestLabHarnessCommandRejectsBadArguments(t *testing.T) {
 	tempChdir(t)
 
@@ -103,6 +156,8 @@ func TestLabHarnessCommandRejectsBadArguments(t *testing.T) {
 		{"lab", "harness", "snapshot", "activate"},
 		{"lab", "harness", "snapshot", "pin"},
 		{"lab", "harness", "snapshot", "unpin"},
+		{"lab", "harness", "snapshot", "promote"},
+		{"lab", "harness", "snapshot", "rollback"},
 		{"lab", "harness", "inspect"},
 	} {
 		if rc := Run(args, "test-version"); rc != 2 {

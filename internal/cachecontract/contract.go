@@ -29,12 +29,14 @@ type Shape struct {
 
 // Contract is the session baseline the agent checks before each model call.
 type Contract struct {
-	Version          string    `json:"version"`
-	SessionID        string    `json:"session_id"`
-	SystemPromptHash string    `json:"system_prompt_hash"`
-	ToolSchemaHash   string    `json:"tool_schema_hash"`
-	StablePrefixHash string    `json:"stable_prefix_hash"`
-	CreatedAt        time.Time `json:"created_at"`
+	Version                 string    `json:"version"`
+	SessionID               string    `json:"session_id"`
+	SystemPromptHash        string    `json:"system_prompt_hash"`
+	ToolSchemaHash          string    `json:"tool_schema_hash"`
+	StablePrefixHash        string    `json:"stable_prefix_hash"`
+	HarnessSnapshot         string    `json:"harness_snapshot,omitempty"`
+	HarnessStablePrefixHash string    `json:"harness_stable_prefix_hash,omitempty"`
+	CreatedAt               time.Time `json:"created_at"`
 }
 
 // Violation describes a current shape that no longer matches the baseline.
@@ -63,13 +65,21 @@ func Capture(systemPrompt string, schemas []provider.ToolSchema, rewriteVersion 
 
 // NewContract creates the session baseline from the first captured shape.
 func NewContract(sessionID string, shape Shape, createdAt time.Time) Contract {
+	return NewContractWithHarness(sessionID, shape, createdAt, "", "")
+}
+
+// NewContractWithHarness creates a session baseline and records the active
+// harness snapshot identity, when one was loaded for this session.
+func NewContractWithHarness(sessionID string, shape Shape, createdAt time.Time, harnessSnapshot, harnessStablePrefixHash string) Contract {
 	return Contract{
-		Version:          Version,
-		SessionID:        sessionID,
-		SystemPromptHash: shape.SystemPromptHash,
-		ToolSchemaHash:   shape.ToolSchemaHash,
-		StablePrefixHash: shape.StablePrefixHash,
-		CreatedAt:        createdAt,
+		Version:                 Version,
+		SessionID:               sessionID,
+		SystemPromptHash:        shape.SystemPromptHash,
+		ToolSchemaHash:          shape.ToolSchemaHash,
+		StablePrefixHash:        shape.StablePrefixHash,
+		HarnessSnapshot:         harnessSnapshot,
+		HarnessStablePrefixHash: harnessStablePrefixHash,
+		CreatedAt:               createdAt,
 	}
 }
 

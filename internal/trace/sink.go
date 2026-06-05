@@ -14,28 +14,30 @@ import (
 
 // Options configures a trace sink.
 type Options struct {
-	Mode            Mode
-	RunID           string
-	SessionID       string
-	HarnessSnapshot string
-	Now             func() time.Time
+	Mode                    Mode
+	RunID                   string
+	SessionID               string
+	HarnessSnapshot         string
+	HarnessStablePrefixHash string
+	Now                     func() time.Time
 }
 
 // Sink writes trace records and forwards the original event stream unchanged.
 type Sink struct {
-	mu              sync.Mutex
-	inner           event.Sink
-	writer          Writer
-	mode            Mode
-	runID           string
-	sessionID       string
-	harnessSnapshot string
-	now             func() time.Time
-	seq             int64
-	turn            int
-	firstErr        error
-	closed          bool
-	toolStart       map[string]time.Time
+	mu                      sync.Mutex
+	inner                   event.Sink
+	writer                  Writer
+	mode                    Mode
+	runID                   string
+	sessionID               string
+	harnessSnapshot         string
+	harnessStablePrefixHash string
+	now                     func() time.Time
+	seq                     int64
+	turn                    int
+	firstErr                error
+	closed                  bool
+	toolStart               map[string]time.Time
 }
 
 // NewSink creates a trace sink and writes session_start immediately.
@@ -55,18 +57,22 @@ func NewSink(inner event.Sink, writer Writer, opts Options) *Sink {
 		now = time.Now
 	}
 	s := &Sink{
-		inner:           inner,
-		writer:          writer,
-		mode:            mode,
-		runID:           defaultID(opts.RunID, "run"),
-		sessionID:       defaultID(opts.SessionID, "session"),
-		harnessSnapshot: opts.HarnessSnapshot,
-		now:             now,
-		toolStart:       map[string]time.Time{},
+		inner:                   inner,
+		writer:                  writer,
+		mode:                    mode,
+		runID:                   defaultID(opts.RunID, "run"),
+		sessionID:               defaultID(opts.SessionID, "session"),
+		harnessSnapshot:         opts.HarnessSnapshot,
+		harnessStablePrefixHash: opts.HarnessStablePrefixHash,
+		now:                     now,
+		toolStart:               map[string]time.Time{},
 	}
 	startData := map[string]any{"mode": string(mode)}
 	if s.harnessSnapshot != "" {
 		startData["harness_snapshot"] = s.harnessSnapshot
+	}
+	if s.harnessStablePrefixHash != "" {
+		startData["harness_stable_prefix_hash"] = s.harnessStablePrefixHash
 	}
 	s.writeLocked("session_start", 0, startData)
 	return s
@@ -349,6 +355,9 @@ func cacheContractData(v event.CacheContractViolationPayload) map[string]any {
 	}
 	if v.HarnessSnapshot != "" {
 		data["harness_snapshot"] = v.HarnessSnapshot
+	}
+	if v.HarnessStablePrefixHash != "" {
+		data["harness_stable_prefix_hash"] = v.HarnessStablePrefixHash
 	}
 	return data
 }

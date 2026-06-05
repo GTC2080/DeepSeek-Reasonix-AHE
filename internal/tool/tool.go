@@ -98,15 +98,16 @@ func LookupBuiltin(name string) (Tool, bool) {
 
 // Registry is a per-run set of tools: enabled built-ins plus plugin tools.
 type Registry struct {
-	mu    sync.RWMutex
-	tools map[string]Tool
-	order []string
-	canon map[string]json.RawMessage
+	mu                   sync.RWMutex
+	tools                map[string]Tool
+	order                []string
+	canon                map[string]json.RawMessage
+	descriptionOverrides map[string]string
 }
 
 // NewRegistry returns an empty registry.
 func NewRegistry() *Registry {
-	return &Registry{tools: map[string]Tool{}, canon: map[string]json.RawMessage{}}
+	return &Registry{tools: map[string]Tool{}, canon: map[string]json.RawMessage{}, descriptionOverrides: map[string]string{}}
 }
 
 // Add inserts (or replaces) a tool, preserving first-seen order. The schema is
@@ -122,6 +123,37 @@ func (r *Registry) Add(t Tool) {
 	}
 	r.tools[name] = t
 	r.canon[name] = provider.CanonicalizeSchema(t.Schema())
+}
+
+// ApplySchemaDescriptions overrides provider-facing tool descriptions without
+// changing tool execution. Blank values are ignored.
+func (r *Registry) ApplySchemaDescriptions(overrides map[string]string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.descriptionOverrides == nil {
+		r.descriptionOverrides = map[string]string{}
+	}
+	for name, description := range overrides {
+		description = strings.TrimSpace(description)
+		if description == "" {
+			continue
+		}
+		r.descriptionOverrides[name] = description
+	}
+}
+
+// SchemaDescriptionOverrides returns a copy of the registered provider-facing
+// description overrides.
+func (r *Registry) SchemaDescriptionOverrides() map[string]string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	out := make(map[string]string, len(r.descriptionOverrides))
+	for name, description := range r.descriptionOverrides {
+		out[name] = description
+	}
+	return out
 }
 
 // MCPNamePrefix is the namespace every MCP tool name carries: the
@@ -207,9 +239,13 @@ func (r *Registry) Schemas() []provider.ToolSchema {
 		if t == nil {
 			continue
 		}
+		description := t.Description()
+		if override := strings.TrimSpace(r.descriptionOverrides[name]); override != "" {
+			description = override
+		}
 		out = append(out, provider.ToolSchema{
 			Name:        t.Name(),
-			Description: t.Description(),
+			Description: description,
 			Parameters:  r.canon[name],
 		})
 	}

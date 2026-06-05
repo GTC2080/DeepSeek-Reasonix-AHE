@@ -1,5 +1,5 @@
 > [!NOTE]
-> **DeepSeek-Reasonix-AHE** is an experimental derivative and secondary-development project based on [esengine/DeepSeek-Reasonix](https://github.com/esengine/DeepSeek-Reasonix). It is designed around the paper [Agentic Harness Engineering: Observability-Driven Automatic Evolution of Coding-Agent Harnesses](https://arxiv.org/abs/2604.25850): Reasonix is the base coding-agent substrate, while AHE is the upgrade framework for observability, cache contracts, harness snapshots, local eval artifacts, proposal workflows, and GC/quota planning. It is not an official upstream release.
+> **DeepSeek-Reasonix-AHE** is an experimental derivative and secondary-development project based on [esengine/DeepSeek-Reasonix](https://github.com/esengine/DeepSeek-Reasonix). It is designed around the paper [Agentic Harness Engineering: Observability-Driven Automatic Evolution of Coding-Agent Harnesses](https://arxiv.org/abs/2604.25850): Reasonix is the base coding-agent substrate, while AHE is the upgrade framework for observability, cache contracts, active harness snapshots, local eval artifacts, proposal workflows, promote/rollback, and GC/quota planning. It is not an official upstream release.
 
 <p align="center">
   <img src="docs/logo.svg" alt="Reasonix" width="640"/>

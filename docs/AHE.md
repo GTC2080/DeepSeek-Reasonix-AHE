@@ -32,7 +32,7 @@ Reasonix-AHE maps the paper's AHE loop onto a local Reasonix workflow:
 
 - No automatic self-modification of Reasonix core.
 - No automatic merge of evolution proposals.
-- No live-session harness mutation.
+- No mid-session harness mutation after session-start injection.
 - No dynamic injection of eval evidence into the live model prefix.
 - No module path rename.
 - No push to the upstream repository.
@@ -41,6 +41,7 @@ Reasonix-AHE maps the paper's AHE loop onto a local Reasonix workflow:
 
 - Cache-first.
 - Snapshot-based harness evolution.
+- Active harness snapshots are loaded once at session start.
 - Append-only live sessions.
 - Stable model-visible tool schema.
 - Trace and evidence stay out of the live agent prefix.

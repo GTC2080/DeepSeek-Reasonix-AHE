@@ -46,6 +46,16 @@ type Lock struct {
 	StablePrefixHash    string    `json:"stable_prefix_hash"`
 }
 
+// ActiveSnapshot is the loaded, provider-facing content for the currently
+// active harness snapshot.
+type ActiveSnapshot struct {
+	SnapshotID       string
+	Lock             Lock
+	SourceDir        string
+	PromptOverlay    string
+	ToolDescriptions map[string]string
+}
+
 // NewLayout returns a harness layout rooted at root, or .reasonix-harness when
 // root is empty.
 func NewLayout(root string) Layout {
@@ -204,6 +214,89 @@ func (l Layout) ClearActive() error {
 	if err := os.Remove(l.ActivePath()); err != nil && !os.IsNotExist(err) {
 		return err
 	}
+	return nil
+}
+
+// LoadActive reads the active snapshot and renders its provider-facing overlay.
+// Missing active marker means no active harness and is not an error.
+func (l Layout) LoadActive() (ActiveSnapshot, error) {
+	id, err := l.Active()
+	if err != nil {
+		return ActiveSnapshot{}, err
+	}
+	if id == "" {
+		return ActiveSnapshot{}, nil
+	}
+	return l.LoadSnapshotSource(id)
+}
+
+// LoadSnapshotSource reads a snapshot's lock and source copy.
+func (l Layout) LoadSnapshotSource(id string) (ActiveSnapshot, error) {
+	lock, err := l.Inspect(id)
+	if err != nil {
+		return ActiveSnapshot{}, err
+	}
+	sourceDir := l.SnapshotSourceDir(id)
+	if !dirExists(sourceDir) {
+		return ActiveSnapshot{}, fmt.Errorf("snapshot %s has no source copy", id)
+	}
+	actual, err := CaptureSourceLock(sourceDir, lock.SnapshotID, lock.CreatedAt)
+	if err != nil {
+		return ActiveSnapshot{}, err
+	}
+	if !sameLockHashes(lock, actual) {
+		return ActiveSnapshot{}, fmt.Errorf("snapshot %s source does not match harness.lock", id)
+	}
+	overlay, err := renderPromptOverlay(sourceDir)
+	if err != nil {
+		return ActiveSnapshot{}, err
+	}
+	descriptions, err := readToolDescriptions(filepath.Join(sourceDir, "tool_descriptions"))
+	if err != nil {
+		return ActiveSnapshot{}, err
+	}
+	return ActiveSnapshot{
+		SnapshotID:       id,
+		Lock:             lock,
+		SourceDir:        sourceDir,
+		PromptOverlay:    overlay,
+		ToolDescriptions: descriptions,
+	}, nil
+}
+
+// ReplaceSourceWithSnapshot replaces the editable source tree with a snapshot's
+// source copy. The caller is responsible for creating any safety snapshot.
+func (l Layout) ReplaceSourceWithSnapshot(id string) error {
+	if _, err := l.Inspect(id); err != nil {
+		return err
+	}
+	snapshotSource := l.SnapshotSourceDir(id)
+	if !dirExists(snapshotSource) {
+		return fmt.Errorf("snapshot %s has no source copy", id)
+	}
+	if err := os.MkdirAll(l.Root, 0o755); err != nil {
+		return err
+	}
+	tmp, err := os.MkdirTemp(l.Root, ".source-replace-")
+	if err != nil {
+		return err
+	}
+	success := false
+	defer func() {
+		if !success {
+			_ = os.RemoveAll(tmp)
+		}
+	}()
+	if err := copyDir(snapshotSource, tmp); err != nil {
+		return err
+	}
+	if err := os.RemoveAll(l.SourceDir()); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, l.SourceDir()); err != nil {
+		return err
+	}
+	success = true
 	return nil
 }
 
@@ -425,6 +518,143 @@ func copyFile(src, dst string, mode fs.FileMode) error {
 	defer out.Close()
 	_, err = io.Copy(out, in)
 	return err
+}
+
+func renderPromptOverlay(sourceDir string) (string, error) {
+	type fragment struct {
+		component string
+		rel       string
+		body      string
+	}
+	var fragments []fragment
+	for _, component := range []string{"prompts", "middleware", "routing"} {
+		root := filepath.Join(sourceDir, component)
+		if !dirExists(root) {
+			continue
+		}
+		err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() {
+				return nil
+			}
+			if !isHarnessTextFile(path) {
+				return nil
+			}
+			rel, err := filepath.Rel(root, path)
+			if err != nil {
+				return err
+			}
+			b, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			body := strings.TrimSpace(string(b))
+			if body == "" {
+				return nil
+			}
+			fragments = append(fragments, fragment{
+				component: component,
+				rel:       filepath.ToSlash(rel),
+				body:      body,
+			})
+			return nil
+		})
+		if err != nil {
+			return "", err
+		}
+	}
+	if len(fragments) == 0 {
+		return "", nil
+	}
+	sort.Slice(fragments, func(i, j int) bool {
+		if fragments[i].component != fragments[j].component {
+			return componentOrder(fragments[i].component) < componentOrder(fragments[j].component)
+		}
+		return fragments[i].rel < fragments[j].rel
+	})
+	var b strings.Builder
+	b.WriteString("# AHE Harness Overlay")
+	for _, f := range fragments {
+		b.WriteString("\n\n## ")
+		b.WriteString(f.component)
+		b.WriteByte('/')
+		b.WriteString(f.rel)
+		b.WriteString("\n\n")
+		b.WriteString(f.body)
+	}
+	return b.String(), nil
+}
+
+func readToolDescriptions(root string) (map[string]string, error) {
+	out := map[string]string{}
+	if !dirExists(root) {
+		return out, nil
+	}
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if !isHarnessTextFile(path) {
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		name := filepath.ToSlash(rel)
+		ext := filepath.Ext(name)
+		name = strings.TrimSuffix(name, ext)
+		if name == "" {
+			return nil
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		body := strings.TrimSpace(string(b))
+		if body != "" {
+			out[name] = body
+		}
+		return nil
+	})
+	return out, err
+}
+
+func isHarnessTextFile(path string) bool {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".md", ".txt", ".toml":
+		return true
+	default:
+		return false
+	}
+}
+
+func componentOrder(component string) int {
+	for i, name := range []string{"prompts", "middleware", "routing"} {
+		if component == name {
+			return i
+		}
+	}
+	return 99
+}
+
+func sameLockHashes(a, b Lock) bool {
+	return a.SystemPromptHash == b.SystemPromptHash &&
+		a.ToolDescriptionHash == b.ToolDescriptionHash &&
+		a.SkillIndexHash == b.SkillIndexHash &&
+		a.MiddlewareHash == b.MiddlewareHash &&
+		a.ModelRoutingHash == b.ModelRoutingHash &&
+		a.StablePrefixHash == b.StablePrefixHash
+}
+
+func dirExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
 }
 
 func hashTree(root string) (string, error) {

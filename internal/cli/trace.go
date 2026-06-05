@@ -57,6 +57,19 @@ func wrapTraceSink(inner event.Sink, cfg traceCLIConfig) (event.Sink, *trace.Sin
 		_ = w.Close()
 		return nil, nil, err
 	}
-	s := trace.NewSink(inner, w, trace.Options{Mode: cfg.Mode, HarnessSnapshot: activeSnapshot})
+	var activeStablePrefixHash string
+	if activeSnapshot != "" {
+		lock, err := harness.DefaultLayout().Inspect(activeSnapshot)
+		if err != nil {
+			_ = w.Close()
+			return nil, nil, err
+		}
+		activeStablePrefixHash = lock.StablePrefixHash
+	}
+	s := trace.NewSink(inner, w, trace.Options{
+		Mode:                    cfg.Mode,
+		HarnessSnapshot:         activeSnapshot,
+		HarnessStablePrefixHash: activeStablePrefixHash,
+	})
 	return s, s, nil
 }

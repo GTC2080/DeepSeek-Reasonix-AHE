@@ -201,6 +201,7 @@ func FilterRegistry(parent *tool.Registry, names []string, exclude ...string) *t
 			sub.Add(tl)
 		}
 	}
+	sub.ApplySchemaDescriptions(parent.SchemaDescriptionOverrides())
 	return sub
 }
 

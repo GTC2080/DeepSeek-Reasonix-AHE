@@ -621,9 +621,82 @@ func labHarnessSnapshotCommand(layout harness.Layout, args []string) int {
 		}
 		fmt.Printf("unpinned %s\n", args[1])
 		return 0
+	case "promote":
+		cfg, ok := parseLabHarnessSnapshotActionArgs(args[1:])
+		if !ok {
+			labHarnessUsage()
+			return 2
+		}
+		result, err := lab.PromoteHarnessSnapshot(lab.HarnessSnapshotActionOptions{
+			SnapshotID: cfg.id,
+			Activate:   cfg.activate,
+			Pin:        cfg.pin,
+		})
+		printHarnessActionResult("promoted", result)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
+			return 1
+		}
+		return 0
+	case "rollback":
+		cfg, ok := parseLabHarnessSnapshotActionArgs(args[1:])
+		if !ok {
+			labHarnessUsage()
+			return 2
+		}
+		result, err := lab.RollbackHarnessSnapshot(lab.HarnessSnapshotActionOptions{
+			SnapshotID: cfg.id,
+			Activate:   cfg.activate,
+			Pin:        cfg.pin,
+		})
+		printHarnessActionResult("rolled_back", result)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
+			return 1
+		}
+		return 0
 	default:
 		labHarnessUsage()
 		return 2
+	}
+}
+
+type labHarnessSnapshotActionArgs struct {
+	id       string
+	activate bool
+	pin      bool
+}
+
+func parseLabHarnessSnapshotActionArgs(args []string) (labHarnessSnapshotActionArgs, bool) {
+	var cfg labHarnessSnapshotActionArgs
+	for _, arg := range args {
+		switch arg {
+		case "--activate":
+			cfg.activate = true
+		case "--pin":
+			cfg.pin = true
+		default:
+			if len(arg) > 0 && arg[0] == '-' {
+				return labHarnessSnapshotActionArgs{}, false
+			}
+			if cfg.id != "" {
+				return labHarnessSnapshotActionArgs{}, false
+			}
+			cfg.id = strings.TrimSpace(arg)
+		}
+	}
+	return cfg, cfg.id != ""
+}
+
+func printHarnessActionResult(label string, result lab.HarnessSnapshotActionResult) {
+	if result.SnapshotID != "" {
+		fmt.Printf("%s\t%s\n", label, result.SnapshotID)
+	}
+	if result.SafetySnapshot != "" {
+		fmt.Printf("safety_snapshot\t%s\n", result.SafetySnapshot)
+	}
+	if result.ResultPath != "" {
+		fmt.Printf("action_result\t%s\n", result.ResultPath)
 	}
 }
 
@@ -639,6 +712,8 @@ func labHarnessUsage() {
 	fmt.Fprintln(os.Stderr, "  reasonix lab harness snapshot activate <snapshot-id>")
 	fmt.Fprintln(os.Stderr, "  reasonix lab harness snapshot pin <snapshot-id>")
 	fmt.Fprintln(os.Stderr, "  reasonix lab harness snapshot unpin <snapshot-id>")
+	fmt.Fprintln(os.Stderr, "  reasonix lab harness snapshot promote <snapshot-id> [--activate] [--pin]")
+	fmt.Fprintln(os.Stderr, "  reasonix lab harness snapshot rollback <snapshot-id> [--activate] [--pin]")
 	fmt.Fprintln(os.Stderr, "  reasonix lab harness inspect <snapshot-id>")
 }
 

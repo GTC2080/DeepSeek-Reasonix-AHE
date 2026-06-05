@@ -51,6 +51,7 @@ func TestTaskToolFiltersTools(t *testing.T) {
 	parentReg.Add(fakeTool{name: "read_file", readOnly: true})
 	parentReg.Add(fakeTool{name: "write_file", readOnly: false})
 	parentReg.Add(fakeTool{name: "bash", readOnly: false})
+	parentReg.ApplySchemaDescriptions(map[string]string{"read_file": "Harness read description."})
 	task := NewTaskTool(sub, nil, parentReg, 20, 0, 0, 0, 0, 0.0, "", "sys", nil)
 	parentReg.Add(task) // simulate the wiring in cli.setup
 	parentReg.Add(fakeTool{name: "run_skill", readOnly: false})
@@ -64,6 +65,9 @@ func TestTaskToolFiltersTools(t *testing.T) {
 	got := map[string]bool{}
 	for _, s := range sub.lastReq.Tools {
 		got[s.Name] = true
+		if s.Name == "read_file" && s.Description != "Harness read description." {
+			t.Fatalf("read_file description = %q, want harness override", s.Description)
+		}
 	}
 	if !got["read_file"] || !got["write_file"] || got["task"] || got["run_skill"] || got["research"] || got["bash"] {
 		t.Errorf("sub-agent tools = %v, want {read_file, write_file} (meta-tools stripped, bash not requested)", got)

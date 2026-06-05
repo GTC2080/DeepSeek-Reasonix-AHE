@@ -18,6 +18,7 @@ import (
 
 	"reasonix/internal/config"
 	"reasonix/internal/event"
+	"reasonix/internal/harness"
 	"reasonix/internal/plugin"
 	"reasonix/internal/provider"
 	"reasonix/internal/sandbox"
@@ -170,6 +171,109 @@ api_key_env = "REASONIX_TEST_KEY_UNSET"
 	}
 	if !strings.Contains(sys, "projskill") || !strings.Contains(sys, "explore") {
 		t.Fatalf("skill names missing from index:\n%s", sys)
+	}
+}
+
+func TestBuildInjectsActiveHarnessSnapshotIntoPromptAndToolDescriptions(t *testing.T) {
+	dir := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Chdir(dir)
+
+	layout := harness.NewLayout(filepath.Join(dir, harness.RootDir))
+	if err := layout.Init(); err != nil {
+		t.Fatalf("Init harness: %v", err)
+	}
+	writeFile(t, layout.SourceDir(), filepath.FromSlash("prompts/system.md"), "Harness prompt rule: prefer compact edits.\n")
+	writeFile(t, layout.SourceDir(), filepath.FromSlash("tool_descriptions/bash.md"), "Harness bash description.\n")
+	lock, err := layout.CreateSnapshot(time.Unix(1, 0).UTC())
+	if err != nil {
+		t.Fatalf("CreateSnapshot: %v", err)
+	}
+	if err := layout.Activate(lock.SnapshotID); err != nil {
+		t.Fatalf("Activate: %v", err)
+	}
+
+	var gotReq struct {
+		Messages []struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"messages"`
+		Tools []struct {
+			Function struct {
+				Name        string `json:"name"`
+				Description string `json:"description"`
+			} `json:"function"`
+		} `json:"tools"`
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotReq); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n"))
+	}))
+	defer srv.Close()
+
+	writeFile(t, dir, "reasonix.toml", fmt.Sprintf(`
+default_model = "test-model"
+
+[codegraph]
+enabled = false
+
+[agent]
+system_prompt = "BASE"
+
+[[providers]]
+name = "test-model"
+kind = "openai"
+base_url = %q
+model = "x"
+api_key_env = "REASONIX_TEST_KEY_UNSET"
+`, srv.URL))
+
+	var notices []event.Event
+	ctrl, err := Build(context.Background(), Options{
+		Sink: event.FuncSink(func(e event.Event) {
+			if e.Kind == event.Notice {
+				notices = append(notices, e)
+			}
+		}),
+	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	defer ctrl.Close()
+
+	sys := systemMessage(ctrl.History())
+	if !strings.Contains(sys, "# AHE Harness Overlay") || !strings.Contains(sys, "Harness prompt rule: prefer compact edits.") {
+		t.Fatalf("active harness prompt overlay missing from system prompt:\n%s", sys)
+	}
+	var foundNotice bool
+	for _, notice := range notices {
+		if strings.Contains(notice.Text, "active harness h-0001 loaded") {
+			foundNotice = true
+			break
+		}
+	}
+	if !foundNotice {
+		t.Fatalf("missing active harness loaded notice: %+v", notices)
+	}
+
+	if err := ctrl.Run(context.Background(), "hello"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	var gotBashDescription string
+	for _, schema := range gotReq.Tools {
+		if schema.Function.Name == "bash" {
+			gotBashDescription = schema.Function.Description
+			break
+		}
+	}
+	if gotBashDescription != "Harness bash description." {
+		t.Fatalf("bash description = %q, want active harness override", gotBashDescription)
 	}
 }
 

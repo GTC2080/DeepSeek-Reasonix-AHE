@@ -6,8 +6,10 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"reasonix/internal/event"
+	"reasonix/internal/harness"
 	"reasonix/internal/trace"
 )
 
@@ -86,12 +88,13 @@ func TestResolveTraceConfigDisabledDefaultsToPreview(t *testing.T) {
 
 func TestWrapTraceSinkIncludesActiveHarnessSnapshot(t *testing.T) {
 	dir := tempChdir(t)
-	root := filepath.Join(dir, ".reasonix-harness")
-	if err := os.MkdirAll(root, 0o755); err != nil {
-		t.Fatal(err)
+	layout := harness.NewLayout(filepath.Join(dir, harness.RootDir))
+	lock, err := layout.CreateSnapshot(time.Unix(1, 0).UTC())
+	if err != nil {
+		t.Fatalf("CreateSnapshot: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "active"), []byte("h-0001\n"), 0o644); err != nil {
-		t.Fatal(err)
+	if err := layout.Activate(lock.SnapshotID); err != nil {
+		t.Fatalf("Activate: %v", err)
 	}
 	path := filepath.Join(dir, "trace.jsonl")
 
@@ -127,5 +130,8 @@ func TestWrapTraceSinkIncludesActiveHarnessSnapshot(t *testing.T) {
 	}
 	if got := first.Data["harness_snapshot"]; got != "h-0001" {
 		t.Fatalf("harness_snapshot = %#v, want h-0001", got)
+	}
+	if got := first.Data["harness_stable_prefix_hash"]; got != lock.StablePrefixHash {
+		t.Fatalf("harness_stable_prefix_hash = %#v, want %s", got, lock.StablePrefixHash)
 	}
 }

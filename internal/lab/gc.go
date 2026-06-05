@@ -645,7 +645,7 @@ func collectSnapshotReferencesFromValue(v any, refs map[string]bool) {
 
 func isSnapshotReferenceKey(key string) bool {
 	switch key {
-	case "harness_snapshot", "base_snapshot", "target_snapshot":
+	case "harness_snapshot", "base_snapshot", "target_snapshot", "snapshot_id", "safety_snapshot":
 		return true
 	default:
 		return false

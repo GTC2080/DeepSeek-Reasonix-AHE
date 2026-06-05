@@ -143,3 +143,27 @@ func TestRegistrySchemasCanonicalizesEquivalentOrdering(t *testing.T) {
 		t.Fatalf("equivalent schemas canonicalized differently:\n  first:  %s\n  second: %s", got, want)
 	}
 }
+
+func TestRegistryAppliesSchemaDescriptionOverrides(t *testing.T) {
+	r := NewRegistry()
+	r.Add(stubTool{name: "bash"})
+	r.Add(stubTool{name: "read_file"})
+
+	r.ApplySchemaDescriptions(map[string]string{
+		"bash":      "Harness bash description.",
+		"unknown":   "ignored",
+		"read_file": "  ",
+	})
+
+	schemas := r.Schemas()
+	descriptions := map[string]string{}
+	for _, schema := range schemas {
+		descriptions[schema.Name] = schema.Description
+	}
+	if got := descriptions["bash"]; got != "Harness bash description." {
+		t.Fatalf("bash description = %q, want harness override", got)
+	}
+	if got := descriptions["read_file"]; got != "read_file desc" {
+		t.Fatalf("blank override should leave read_file unchanged, got %q", got)
+	}
+}

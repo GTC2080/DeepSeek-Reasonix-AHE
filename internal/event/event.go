@@ -11,7 +11,11 @@
 // line prefixes — fragile, and lossy for any frontend richer than a terminal.
 package event
 
-import "reasonix/internal/provider"
+import (
+	"time"
+
+	"reasonix/internal/provider"
+)
 
 // Kind tags an Event. Read the field(s) documented for that kind.
 type Kind int
@@ -79,6 +83,15 @@ const (
 	// event — or TurnDone — clears. Appended last to keep the Kind values before
 	// it wire-stable.
 	Retrying
+	// ModelRequest marks one provider request about to start. It carries only
+	// metadata, not prompt content, so sinks can trace model-call cadence without
+	// duplicating the session transcript.
+	ModelRequest
+	// ModelResponse marks one provider request finishing or failing.
+	ModelResponse
+	// CacheContractViolation marks a session cache-contract drift detected before
+	// a provider request. It is warning-only in v0.1.
+	CacheContractViolation
 )
 
 // Level classifies a Notice so sinks can style or filter it.
@@ -185,6 +198,41 @@ type CacheDiagnostics struct {
 	CacheHitTokens      int
 }
 
+// ModelCall describes one provider request/response boundary. It carries only
+// operational metadata; content lives in the normal Text/Message/tool events.
+type ModelCall struct {
+	Provider      string
+	Turn          int
+	MessageCount  int
+	ToolCount     int
+	Temperature   float64
+	Duration      time.Duration
+	FinishReason  string
+	ToolCallCount int
+	Usage         *provider.Usage
+	Err           string
+}
+
+// CacheContractShape is the trace-safe subset of the stable-prefix snapshot.
+type CacheContractShape struct {
+	SystemPromptHash string `json:"system_prompt_hash"`
+	ToolSchemaHash   string `json:"tool_schema_hash"`
+	StablePrefixHash string `json:"stable_prefix_hash"`
+}
+
+// CacheContractViolationPayload describes a cache-contract drift. The agent
+// emits it before the provider request and also emits a warning Notice; v0.1
+// never blocks the run on this event.
+type CacheContractViolationPayload struct {
+	SessionID       string             `json:"session_id"`
+	HarnessSnapshot string             `json:"harness_snapshot,omitempty"`
+	Turn            int                `json:"turn"`
+	Step            int                `json:"step"`
+	Expected        CacheContractShape `json:"expected"`
+	Actual          CacheContractShape `json:"actual"`
+	Reasons         []string           `json:"reasons"`
+}
+
 // Event is one increment in a turn's event stream. Read the field(s) documented
 // for Kind; the others are zero.
 type Event struct {
@@ -199,15 +247,17 @@ type Event struct {
 	// session (Usage events only), so a frontend can show the aggregate hit-rate
 	// — which doesn't crater on a short turn or after compaction — alongside
 	// Usage's single-turn numbers.
-	SessionHit   int        // Usage: cumulative cache-hit prompt tokens this session
-	SessionMiss  int        // Usage: cumulative cache-miss prompt tokens this session
-	Level        Level      // Notice
-	Approval     Approval   // ApprovalRequest
-	Ask          Ask        // AskRequest
-	Err          error      // TurnDone: non-nil on failure
-	Compaction   Compaction // Compaction
-	RetryAttempt int        // Retrying: 1-based attempt about to be made
-	RetryMax     int        // Retrying: total attempts before giving up
+	SessionHit    int                           // Usage: cumulative cache-hit prompt tokens this session
+	SessionMiss   int                           // Usage: cumulative cache-miss prompt tokens this session
+	Level         Level                         // Notice
+	Approval      Approval                      // ApprovalRequest
+	Ask           Ask                           // AskRequest
+	Err           error                         // TurnDone: non-nil on failure
+	Compaction    Compaction                    // Compaction
+	RetryAttempt  int                           // Retrying: 1-based attempt about to be made
+	RetryMax      int                           // Retrying: total attempts before giving up
+	Model         ModelCall                     // ModelRequest / ModelResponse
+	CacheContract CacheContractViolationPayload // CacheContractViolation
 }
 
 // Sink consumes a turn's events. The agent calls Emit serially from its run

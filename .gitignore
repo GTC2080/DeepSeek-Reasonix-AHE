@@ -46,6 +46,10 @@ node_modules/
 !/.reasonix/commands/
 !/.reasonix/commands/review.md
 
+# Reasonix-AHE local experiment artifacts.
+/.reasonix-ahe/
+/.reasonix-harness/
+
 # CodeGraph per-project index (rebuilt locally; never committed)
 .codegraph/
 

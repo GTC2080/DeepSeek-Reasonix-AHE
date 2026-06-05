@@ -1,3 +1,6 @@
+> [!NOTE]
+> **DeepSeek-Reasonix-AHE** 是基于 [esengine/DeepSeek-Reasonix](https://github.com/esengine/DeepSeek-Reasonix) 的实验性二次开发项目，用于本地 Agentic Harness Engineering 研究，覆盖 trace 可观测、缓存契约、harness snapshot、本地 eval artifact、proposal workflow 与 GC/quota 规划。它不是上游官方发布版本。
+
 <p align="center">
   <img src="docs/logo.svg" alt="Reasonix" width="640"/>
 </p>

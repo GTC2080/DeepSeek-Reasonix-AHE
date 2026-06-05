@@ -27,6 +27,7 @@ import (
 	"reasonix/internal/provider"
 	"reasonix/internal/provider/openai"
 	"reasonix/internal/serve"
+	"reasonix/internal/trace"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -79,6 +80,9 @@ func Run(args []string, version string) int {
 	case "doctor":
 		configureCLIThemeFromConfigNoProbe()
 		return doctorCommand(rest, version)
+	case "lab":
+		configureCLIThemeFromConfigNoProbe()
+		return labCommand(rest)
 	case "version", "--version", "-v":
 		fmt.Println("reasonix", version)
 		return 0
@@ -162,12 +166,19 @@ func runAgent(args []string) int {
 	maxSteps := fs.Int("max-steps", 0, "max tool-call rounds (0 = use config/default)")
 	showThinking := fs.Bool("show-thinking", false, "show thinking text instead of the collapsed thinking marker")
 	metricsPath := fs.String("metrics", "", "write a JSON token/cache/cost summary of the run to this path")
+	tracePath := fs.String("trace", "", "write typed JSONL trace events to this path (or REASONIX_TRACE)")
+	traceMode := fs.String("trace-mode", "", "trace body mode: metadata, preview, or full (or REASONIX_TRACE_MODE)")
 	dir := fs.String("dir", "", "change to this directory first (project root); config, sandbox and file tools resolve from here")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	if rc := chdirTo(*dir); rc != 0 {
 		return rc
+	}
+	traceCfg, err := resolveTraceConfig(*tracePath, *traceMode)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
+		return 2
 	}
 	configureCLIThemeFromConfigForTTYOutput()
 
@@ -202,8 +213,17 @@ func runAgent(args []string) int {
 		metrics = &metricsSink{inner: textSink}
 		sink = metrics
 	}
+	var traceSink *trace.Sink
+	sink, traceSink, err = wrapTraceSink(sink, traceCfg)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
+		return 1
+	}
 	ctrl, err := setup(ctx, *model, *maxSteps, true, sink)
 	if err != nil {
+		if traceSink != nil {
+			_ = traceSink.Close(err)
+		}
 		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
 		return 1
 	}
@@ -215,8 +235,19 @@ func runAgent(args []string) int {
 			fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
 		}
 	}
+	var traceErr error
+	if traceSink != nil {
+		traceErr = traceSink.Close(runErr)
+	}
 	if runErr != nil {
+		if traceErr != nil {
+			fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, traceErr)
+		}
 		fmt.Fprintln(os.Stderr, "\n"+i18n.M.ErrorPrefix, runErr)
+		return 1
+	}
+	if traceErr != nil {
+		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, traceErr)
 		return 1
 	}
 	return 0
@@ -280,12 +311,19 @@ func chatREPL(args []string) int {
 	resume := fs.Bool("resume", false, "list saved sessions and pick one to resume")
 	yolo := fs.Bool("dangerously-skip-permissions", false, "YOLO: auto-approve every tool call this session (deny rules still apply)")
 	fs.BoolVar(yolo, "yolo", false, "alias for --dangerously-skip-permissions")
+	tracePath := fs.String("trace", "", "write typed JSONL trace events to this path (or REASONIX_TRACE)")
+	traceMode := fs.String("trace-mode", "", "trace body mode: metadata, preview, or full (or REASONIX_TRACE_MODE)")
 	dir := fs.String("dir", "", "change to this directory first (project root); config, sandbox and file tools resolve from here")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	if rc := chdirTo(*dir); rc != 0 {
 		return rc
+	}
+	traceCfg, err := resolveTraceConfig(*tracePath, *traceMode)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
+		return 2
 	}
 	if cfg, err := config.Load(); err == nil {
 		configureCLIThemeWithStyle(cfg.UITheme(), cfg.UIThemeStyle())
@@ -322,7 +360,20 @@ func chatREPL(args []string) int {
 	// agent goroutine.
 	eventCh := make(chan event.Event, 1024)
 
-	sink := &eventSink{ch: eventCh}
+	var sink event.Sink = &eventSink{ch: eventCh}
+	var traceSink *trace.Sink
+	sink, traceSink, err = wrapTraceSink(sink, traceCfg)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
+		return 1
+	}
+	closeTrace := func(err error) {
+		if traceSink != nil {
+			if traceErr := traceSink.Close(err); traceErr != nil {
+				fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, traceErr)
+			}
+		}
+	}
 	ctrl, err := setup(ctx, *model, *maxSteps, false, sink)
 	if err != nil && errors.Is(err, boot.ErrUnknownModel) && isInteractive() && config.SourcePath() == "" {
 		// True first run whose default model can't resolve: guide setup, then retry.
@@ -335,6 +386,7 @@ func chatREPL(args []string) int {
 		ctrl, err = setup(ctx, *model, *maxSteps, false, sink)
 	}
 	if err != nil {
+		closeTrace(err)
 		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
 		return 1
 	}
@@ -344,6 +396,7 @@ func chatREPL(args []string) int {
 	// session lands in a new file stamped with the model name.
 	if resumePath != "" {
 		if loaded, err := agent.LoadSession(resumePath); err != nil {
+			closeTrace(err)
 			fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
 			return 1
 		} else {
@@ -444,8 +497,19 @@ func chatREPL(args []string) int {
 	} else {
 		ctrl.Close()
 	}
+	var traceErr error
+	if traceSink != nil {
+		traceErr = traceSink.Close(runErr)
+	}
 	if runErr != nil {
+		if traceErr != nil {
+			fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, traceErr)
+		}
 		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, runErr)
+		return 1
+	}
+	if traceErr != nil {
+		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, traceErr)
 		return 1
 	}
 	return 0

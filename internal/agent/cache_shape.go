@@ -1,11 +1,9 @@
 package agent
 
 import (
-	"crypto/sha256"
 	"encoding/json"
-	"fmt"
-	"sort"
 
+	"reasonix/internal/cachecontract"
 	"reasonix/internal/event"
 	"reasonix/internal/provider"
 )
@@ -26,41 +24,16 @@ type PrefixShape struct {
 // every call site, while still assigning to event.Event.CacheDiagnostics.
 type CacheDiagnostics = event.CacheDiagnostics
 
-func shortHash(v interface{}) string {
-	b, _ := json.Marshal(v)
-	h := sha256.Sum256(b)
-	return fmt.Sprintf("%x", h[:8])
-}
-
 // CaptureShape takes a snapshot of the current prefix state.
 func CaptureShape(systemPrompt string, schemas []provider.ToolSchema, rewriteVersion int) PrefixShape {
-	normalizedSchemas := normalizeToolSchemas(schemas)
-	toolsJSON, _ := json.Marshal(normalizedSchemas)
+	shape := cachecontract.Capture(systemPrompt, schemas, rewriteVersion)
 	return PrefixShape{
-		SystemHash: shortHash(systemPrompt),
-		ToolsHash:  shortHash(string(toolsJSON)),
-		PrefixHash: shortHash(map[string]interface{}{
-			"system": systemPrompt,
-			"tools":  string(toolsJSON),
-		}),
-		LogRewriteVersion: rewriteVersion,
-		ToolSchemaTokens:  estimateTokens(string(toolsJSON)),
+		SystemHash:        shape.SystemPromptHash,
+		ToolsHash:         shape.ToolSchemaHash,
+		PrefixHash:        shape.StablePrefixHash,
+		LogRewriteVersion: shape.LogRewriteVersion,
+		ToolSchemaTokens:  shape.ToolSchemaTokens,
 	}
-}
-
-func normalizeToolSchemas(schemas []provider.ToolSchema) []provider.ToolSchema {
-	out := make([]provider.ToolSchema, len(schemas))
-	copy(out, schemas)
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Name != out[j].Name {
-			return out[i].Name < out[j].Name
-		}
-		if out[i].Description != out[j].Description {
-			return out[i].Description < out[j].Description
-		}
-		return string(out[i].Parameters) < string(out[j].Parameters)
-	})
-	return out
 }
 
 // CompareShape returns diagnostics describing what changed between two shapes.
@@ -97,11 +70,7 @@ func CompareShape(prev, cur PrefixShape, usage *provider.Usage) CacheDiagnostics
 // A proper tokenizer would be more accurate, but for diagnostic
 // purposes a byte-based estimate is sufficient and zero-alloc.
 func estimateTokens(s string) int {
-	// ~4 chars per token is a workable heuristic for code-heavy JSON.
-	if len(s) == 0 {
-		return 0
-	}
-	return len(s) / 4
+	return cachecontract.EstimateTokens(s)
 }
 
 // SchemaTokenCosts returns per-tool token cost estimates for display.

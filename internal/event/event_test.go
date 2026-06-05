@@ -20,6 +20,12 @@ func TestKindConstants(t *testing.T) {
 			t.Errorf("Kind %d: got %d", i, int(k))
 		}
 	}
+	if ModelRequest <= Retrying || ModelResponse <= ModelRequest {
+		t.Errorf("model events should be appended after existing event kinds: request=%d response=%d retrying=%d", ModelRequest, ModelResponse, Retrying)
+	}
+	if CacheContractViolation <= ModelResponse {
+		t.Errorf("cache contract event should be appended after model events: contract=%d response=%d", CacheContractViolation, ModelResponse)
+	}
 }
 
 // --- Level constants ---
@@ -94,6 +100,23 @@ func TestEventFields(t *testing.T) {
 	}
 	if e.SessionHit != 80 || e.SessionMiss != 20 {
 		t.Errorf("SessionHit=%d, SessionMiss=%d", e.SessionHit, e.SessionMiss)
+	}
+
+	e = Event{Kind: ModelResponse, Model: ModelCall{Provider: "deepseek", ToolCallCount: 2, Usage: usage}}
+	if e.Model.Provider != "deepseek" || e.Model.ToolCallCount != 2 || e.Model.Usage != usage {
+		t.Errorf("unexpected model payload: %+v", e.Model)
+	}
+
+	e = Event{
+		Kind: CacheContractViolation,
+		CacheContract: CacheContractViolationPayload{
+			SessionID: "sess",
+			Step:      2,
+			Reasons:   []string{"tool_schema_hash"},
+		},
+	}
+	if e.CacheContract.SessionID != "sess" || e.CacheContract.Step != 2 || len(e.CacheContract.Reasons) != 1 {
+		t.Errorf("unexpected cache contract payload: %+v", e.CacheContract)
 	}
 }
 

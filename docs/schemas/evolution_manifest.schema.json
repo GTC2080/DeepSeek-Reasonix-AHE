@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://reasonix.local/schemas/evolution_manifest.schema.json",
+  "title": "Reasonix-AHE Evolution Proposal Manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "proposal_id",
+    "base_snapshot",
+    "target_snapshot",
+    "components_changed",
+    "evidence",
+    "root_cause",
+    "expected_fixes",
+    "regression_risks",
+    "cache_risk",
+    "acceptance_rules",
+    "rollback_rule"
+  ],
+  "properties": {
+    "proposal_id": {
+      "type": "string",
+      "pattern": "^p-[0-9]{4}-[a-z0-9._-]+$"
+    },
+    "base_snapshot": {
+      "type": "string",
+      "pattern": "^h-[0-9]{4}$"
+    },
+    "target_snapshot": {
+      "type": "string",
+      "pattern": "^h-[0-9]{4}$"
+    },
+    "components_changed": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "evidence": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "root_cause": {
+      "type": "string",
+      "minLength": 1
+    },
+    "expected_fixes": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "regression_risks": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "cache_risk": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stable_prefix_changed", "expected_hit_ratio_delta"],
+      "properties": {
+        "stable_prefix_changed": { "type": "boolean" },
+        "expected_hit_ratio_delta": {
+          "type": "number",
+          "minimum": -1,
+          "maximum": 1
+        }
+      }
+    },
+    "acceptance_rules": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "min_smoke_pass_rate",
+        "min_canary_pass_rate",
+        "min_cache_hit_ratio",
+        "max_contract_violations"
+      ],
+      "properties": {
+        "min_smoke_pass_rate": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "min_canary_pass_rate": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "min_cache_hit_ratio": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "max_contract_violations": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "rollback_rule": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}

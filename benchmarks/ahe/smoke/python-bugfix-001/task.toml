@@ -1,0 +1,15 @@
+id = "python-bugfix-001"
+name = "Fix failing parser test"
+category = "bugfix"
+difficulty = "smoke"
+timeout_seconds = 300
+
+[models]
+default = "deepseek-v4-flash"
+
+[cache]
+min_hit_ratio = 0.90
+max_contract_violations = 0
+
+[verify]
+command = "bash verify.sh"

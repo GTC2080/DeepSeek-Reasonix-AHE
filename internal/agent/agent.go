@@ -7,11 +7,14 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 	"unicode/utf8"
 
+	"reasonix/internal/cachecontract"
 	"reasonix/internal/diff"
 	"reasonix/internal/event"
 	"reasonix/internal/evidence"
+	"reasonix/internal/harness"
 	"reasonix/internal/instruction"
 	"reasonix/internal/jobs"
 	"reasonix/internal/memory"
@@ -145,6 +148,15 @@ type Agent struct {
 	lastPrefixShape     PrefixShape
 	haveLastPrefixShape bool
 
+	// cacheContract is the first provider request's stable-prefix baseline for
+	// this local session. Drift is warning-only in v0.1 but typed so trace/eval
+	// tooling can attribute prompt-cache misses.
+	cacheContractSessionID       string
+	cacheContractHarnessSnapshot string
+	cacheContract                cachecontract.Contract
+	haveCacheContract            bool
+	userTurn                     int
+
 	// planMode, when true, refuses any tool call whose ReadOnly() is false.
 	// The system prompt and tool list never change with the toggle so the
 	// prompt-cache prefix stays valid; the gating happens at execute time
@@ -267,6 +279,13 @@ func (a *Agent) SetSession(s *Session) {
 	a.sessMu.Lock()
 	defer a.sessMu.Unlock()
 	a.session = s
+	a.cacheContractSessionID = cachecontract.NewSessionID()
+	a.cacheContractHarnessSnapshot = activeHarnessSnapshot()
+	a.cacheContract = cachecontract.Contract{}
+	a.haveCacheContract = false
+	a.lastPrefixShape = PrefixShape{}
+	a.haveLastPrefixShape = false
+	a.userTurn = 0
 }
 
 // LastUsage returns the most recent per-turn token telemetry the provider
@@ -355,24 +374,26 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
 		hooks = nil
 	}
 	return &Agent{
-		prov:              prov,
-		tools:             tools,
-		session:           session,
-		maxSteps:          opts.MaxSteps,
-		temperature:       opts.Temperature,
-		pricing:           opts.Pricing,
-		sink:              sink,
-		gate:              gate,
-		hooks:             hooks,
-		jobs:              opts.Jobs,
-		evidence:          evidence.NewLedger(),
-		projectChecks:     append([]instruction.VerifyCheck(nil), opts.ProjectChecks...),
-		contextWindow:     opts.ContextWindow,
-		softCompactRatio:  opts.SoftCompactRatio,
-		compactRatio:      opts.CompactRatio,
-		compactForceRatio: opts.CompactForceRatio,
-		recentKeep:        opts.RecentKeep,
-		archiveDir:        opts.ArchiveDir,
+		prov:                         prov,
+		tools:                        tools,
+		session:                      session,
+		maxSteps:                     opts.MaxSteps,
+		temperature:                  opts.Temperature,
+		pricing:                      opts.Pricing,
+		sink:                         sink,
+		cacheContractSessionID:       cachecontract.NewSessionID(),
+		cacheContractHarnessSnapshot: activeHarnessSnapshot(),
+		gate:                         gate,
+		hooks:                        hooks,
+		jobs:                         opts.Jobs,
+		evidence:                     evidence.NewLedger(),
+		projectChecks:                append([]instruction.VerifyCheck(nil), opts.ProjectChecks...),
+		contextWindow:                opts.ContextWindow,
+		softCompactRatio:             opts.SoftCompactRatio,
+		compactRatio:                 opts.CompactRatio,
+		compactForceRatio:            opts.CompactForceRatio,
+		recentKeep:                   opts.RecentKeep,
+		archiveDir:                   opts.ArchiveDir,
 	}
 }
 
@@ -387,18 +408,21 @@ func (a *Agent) Run(ctx context.Context, input string) error {
 		a.evidence.Reset()
 	}
 	a.sink.Emit(event.Event{Kind: event.TurnStarted})
+	a.userTurn++
+	userTurn := a.userTurn
 	a.session.Add(provider.Message{Role: provider.RoleUser, Content: input})
 
 	finalReadinessBlocks := 0
 	for step := 0; a.maxSteps <= 0 || step < a.maxSteps; step++ {
 		schemas := a.tools.Schemas()
 		prefixShape := a.capturePrefixShape(schemas)
+		a.checkCacheContract(prefixShape, userTurn, step+1)
 		prevPrefixShape := a.lastPrefixShape
 		if !a.haveLastPrefixShape {
 			prevPrefixShape = prefixShape
 		}
 
-		text, reasoning, signature, calls, usage, err := a.stream(ctx, step+1)
+		text, reasoning, signature, calls, usage, err := a.stream(ctx, step+1, schemas)
 		if err != nil {
 			return err
 		}
@@ -530,16 +554,29 @@ func finalReadinessRetryMessage(reason string) string {
 // stream so a sink can re-render the streamed raw text as styled markdown. The
 // accumulated text and reasoning are also returned so the caller can round-trip
 // reasoning on the next turn.
-func (a *Agent) stream(ctx context.Context, turn int) (string, string, string, []provider.ToolCall, *provider.Usage, error) {
+func (a *Agent) stream(ctx context.Context, turn int, schemas []provider.ToolSchema) (string, string, string, []provider.ToolCall, *provider.Usage, error) {
 	ctx = provider.WithRetryNotify(ctx, func(info provider.RetryInfo) {
 		a.sink.Emit(event.Event{Kind: event.Retrying, RetryAttempt: info.Attempt, RetryMax: info.Max})
 	})
-	ch, err := a.prov.Stream(ctx, provider.Request{
+	req := provider.Request{
 		Messages:    a.session.Messages,
-		Tools:       a.tools.Schemas(),
+		Tools:       schemas,
 		Temperature: a.temperature,
-	})
+	}
+	model := event.ModelCall{
+		Provider:     providerName(a.prov),
+		Turn:         turn,
+		MessageCount: len(req.Messages),
+		ToolCount:    len(req.Tools),
+		Temperature:  req.Temperature,
+	}
+	a.sink.Emit(event.Event{Kind: event.ModelRequest, Model: model})
+	start := time.Now()
+	ch, err := a.prov.Stream(ctx, req)
 	if err != nil {
+		model.Duration = time.Since(start)
+		model.Err = err.Error()
+		a.sink.Emit(event.Event{Kind: event.ModelResponse, Model: model})
 		return "", "", "", nil, nil, err
 	}
 
@@ -584,9 +621,26 @@ func (a *Agent) stream(ctx context.Context, turn int) (string, string, string, [
 			a.sessCacheHit.Add(int64(chunk.Usage.CacheHitTokens))
 			a.sessCacheMiss.Add(int64(chunk.Usage.CacheMissTokens))
 		case provider.ChunkError:
+			model.Duration = time.Since(start)
+			model.ToolCallCount = len(calls)
+			model.Usage = usage
+			if usage != nil {
+				model.FinishReason = usage.FinishReason
+			}
+			if chunk.Err != nil {
+				model.Err = chunk.Err.Error()
+			}
+			a.sink.Emit(event.Event{Kind: event.ModelResponse, Model: model})
 			return "", "", "", nil, nil, chunk.Err
 		}
 	}
+	model.Duration = time.Since(start)
+	model.ToolCallCount = len(calls)
+	model.Usage = usage
+	if usage != nil {
+		model.FinishReason = usage.FinishReason
+	}
+	a.sink.Emit(event.Event{Kind: event.ModelResponse, Model: model})
 	// With a PostLLMCall hook, the live stream was suppressed above; transform the
 	// full reasoning now and emit it once so the sink never sees the untranslated
 	// text. Without a hook this is skipped — the chunk-by-chunk events already fired.
@@ -616,8 +670,72 @@ func (a *Agent) stream(ctx context.Context, turn int) (string, string, string, [
 	return text.String(), stored, signature, calls, usage, nil
 }
 
+func providerName(p provider.Provider) string {
+	if nilutil.IsNil(p) {
+		return ""
+	}
+	return p.Name()
+}
+
 func (a *Agent) capturePrefixShape(schemas []provider.ToolSchema) PrefixShape {
 	return CaptureShape(a.systemPrompt(), schemas, a.session.RewriteVersion())
+}
+
+func (a *Agent) checkCacheContract(prefixShape PrefixShape, userTurn, step int) {
+	actual := cacheContractShape(prefixShape)
+	if !a.haveCacheContract {
+		a.cacheContract = cachecontract.NewContract(a.cacheContractSessionID, actual, time.Now())
+		a.haveCacheContract = true
+		return
+	}
+	violation, ok := cachecontract.Compare(a.cacheContract, actual)
+	if !ok {
+		return
+	}
+	payload := event.CacheContractViolationPayload{
+		SessionID:       violation.SessionID,
+		HarnessSnapshot: a.cacheContractHarnessSnapshot,
+		Turn:            userTurn,
+		Step:            step,
+		Expected:        eventCacheContractShape(violation.Expected),
+		Actual:          eventCacheContractShape(violation.Actual),
+		Reasons:         append([]string(nil), violation.Reasons...),
+	}
+	a.sink.Emit(event.Event{Kind: event.CacheContractViolation, CacheContract: payload})
+	a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: cacheContractWarning(violation.Reasons)})
+}
+
+func cacheContractShape(shape PrefixShape) cachecontract.Shape {
+	return cachecontract.Shape{
+		SystemPromptHash:  shape.SystemHash,
+		ToolSchemaHash:    shape.ToolsHash,
+		StablePrefixHash:  shape.PrefixHash,
+		LogRewriteVersion: shape.LogRewriteVersion,
+		ToolSchemaTokens:  shape.ToolSchemaTokens,
+	}
+}
+
+func eventCacheContractShape(shape cachecontract.Shape) event.CacheContractShape {
+	return event.CacheContractShape{
+		SystemPromptHash: shape.SystemPromptHash,
+		ToolSchemaHash:   shape.ToolSchemaHash,
+		StablePrefixHash: shape.StablePrefixHash,
+	}
+}
+
+func cacheContractWarning(reasons []string) string {
+	if len(reasons) == 0 {
+		return "cache contract drift: stable_prefix_hash changed"
+	}
+	return "cache contract drift: " + strings.Join(reasons, ", ") + " changed"
+}
+
+func activeHarnessSnapshot() string {
+	active, err := harness.DefaultLayout().Active()
+	if err != nil {
+		return ""
+	}
+	return active
 }
 
 func (a *Agent) systemPrompt() string {

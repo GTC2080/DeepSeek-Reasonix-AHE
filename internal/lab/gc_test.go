@@ -65,6 +65,11 @@ func TestPlanGCKeepsProtectedSnapshotsAndDeletesOldExcess(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeGCTrace(t, filepath.Join(aheRoot, "traces", "referenced.trace.jsonl"), "h-0004", "")
+	if err := writeJSON(filepath.Join(aheRoot, "proposals", "p-0001-apply", "apply", "attempt-1", "result.json"), ProposalApplyResult{
+		ProposalID: "p-0001-apply", TargetSnapshot: "h-0005",
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	report, err := PlanGC(GCOptions{
 		AHERoot:     aheRoot,
@@ -86,6 +91,7 @@ func TestPlanGCKeepsProtectedSnapshotsAndDeletesOldExcess(t *testing.T) {
 		{"h-0002", "active snapshot"},
 		{"h-0003", "pinned snapshot"},
 		{"h-0004", "snapshot referenced by local artifact"},
+		{"h-0005", "snapshot referenced by local artifact"},
 	} {
 		if !hasGCDecision(report.WouldKeep, filepath.Join(harnessRoot, "snapshots", tc.id), tc.reason) {
 			t.Fatalf("keep decisions = %+v, missing %s %q", report.WouldKeep, tc.id, tc.reason)

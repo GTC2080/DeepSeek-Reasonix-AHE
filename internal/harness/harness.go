@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -83,6 +84,10 @@ func (l Layout) SnapshotDir(id string) string {
 	return filepath.Join(l.SnapshotsDir(), id)
 }
 
+func (l Layout) SnapshotSourceDir(id string) string {
+	return filepath.Join(l.SnapshotDir(id), "source")
+}
+
 // Init creates the local harness source, snapshot, and manifest directories.
 func (l Layout) Init() error {
 	for _, dir := range []string{l.SourceDir(), l.SnapshotsDir(), l.ManifestsDir()} {
@@ -103,11 +108,23 @@ func (l Layout) CreateSnapshot(createdAt time.Time) (Lock, error) {
 	if err := l.Init(); err != nil {
 		return Lock{}, err
 	}
+	return l.CreateSnapshotFromSource(l.SourceDir(), createdAt)
+}
+
+// CreateSnapshotFromSource writes the next h-NNNN snapshot from sourceDir. New
+// snapshots include both harness.lock and a source/ copy.
+func (l Layout) CreateSnapshotFromSource(sourceDir string, createdAt time.Time) (Lock, error) {
+	if strings.TrimSpace(sourceDir) == "" {
+		return Lock{}, fmt.Errorf("source dir is required")
+	}
+	if err := l.ensureSnapshotLayout(); err != nil {
+		return Lock{}, err
+	}
 	id, err := l.nextSnapshotID()
 	if err != nil {
 		return Lock{}, err
 	}
-	lock, err := l.captureLock(id, createdAt)
+	lock, err := CaptureSourceLock(sourceDir, id, createdAt)
 	if err != nil {
 		return Lock{}, err
 	}
@@ -115,9 +132,19 @@ func (l Layout) CreateSnapshot(createdAt time.Time) (Lock, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return Lock{}, err
 	}
+	success := false
+	defer func() {
+		if !success {
+			_ = os.RemoveAll(dir)
+		}
+	}()
 	if err := writeLock(filepath.Join(dir, LockFile), lock); err != nil {
 		return Lock{}, err
 	}
+	if err := copyDir(sourceDir, l.SnapshotSourceDir(id)); err != nil {
+		return Lock{}, err
+	}
+	success = true
 	return lock, nil
 }
 
@@ -169,6 +196,15 @@ func (l Layout) Active() (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(string(b)), nil
+}
+
+// ClearActive removes the active snapshot marker. Missing active marker is not
+// an error.
+func (l Layout) ClearActive() error {
+	if err := os.Remove(l.ActivePath()); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 // Pinned returns the sorted unique snapshot ids in the pinned file. Missing
@@ -262,24 +298,35 @@ func (l Layout) writePinned(ids []string) error {
 	return os.WriteFile(l.PinnedPath(), []byte(body), 0o644)
 }
 
-func (l Layout) captureLock(id string, createdAt time.Time) (Lock, error) {
-	systemHash, err := hashTree(filepath.Join(l.SourceDir(), "prompts"))
+func (l Layout) ensureSnapshotLayout() error {
+	for _, dir := range []string{l.Root, l.SnapshotsDir(), l.ManifestsDir()} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// CaptureSourceLock computes lock metadata for sourceDir without writing a
+// snapshot.
+func CaptureSourceLock(sourceDir, id string, createdAt time.Time) (Lock, error) {
+	systemHash, err := hashTree(filepath.Join(sourceDir, "prompts"))
 	if err != nil {
 		return Lock{}, err
 	}
-	toolHash, err := hashTree(filepath.Join(l.SourceDir(), "tool_descriptions"))
+	toolHash, err := hashTree(filepath.Join(sourceDir, "tool_descriptions"))
 	if err != nil {
 		return Lock{}, err
 	}
-	skillHash, err := hashTree(filepath.Join(l.SourceDir(), "skills"))
+	skillHash, err := hashTree(filepath.Join(sourceDir, "skills"))
 	if err != nil {
 		return Lock{}, err
 	}
-	middlewareHash, err := hashTree(filepath.Join(l.SourceDir(), "middleware"))
+	middlewareHash, err := hashTree(filepath.Join(sourceDir, "middleware"))
 	if err != nil {
 		return Lock{}, err
 	}
-	routingHash, err := hashTree(filepath.Join(l.SourceDir(), "routing"))
+	routingHash, err := hashTree(filepath.Join(sourceDir, "routing"))
 	if err != nil {
 		return Lock{}, err
 	}
@@ -339,6 +386,45 @@ func writeLock(path string, lock Lock) error {
 	}
 	b = append(b, '\n')
 	return os.WriteFile(path, b, 0o644)
+}
+
+func copyDir(src, dst string) error {
+	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		if d.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		return copyFile(path, target, info.Mode())
+	})
+}
+
+func copyFile(src, dst string, mode fs.FileMode) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	_, err = io.Copy(out, in)
+	return err
 }
 
 func hashTree(root string) (string, error) {

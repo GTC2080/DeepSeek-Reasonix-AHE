@@ -92,6 +92,52 @@ func TestRunDispatchesLabProposalStatusAcceptAndReject(t *testing.T) {
 	}
 }
 
+func TestRunDispatchesLabProposalApply(t *testing.T) {
+	dir := tempChdir(t)
+	if err := os.MkdirAll(filepath.Join(dir, ".reasonix-harness", "source", "prompts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".reasonix-harness", "source", "prompts", "system.md"), []byte("one\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if rc := Run([]string{"lab", "harness", "snapshot", "create"}, "test-version"); rc != 0 {
+		t.Fatalf("snapshot create rc = %d, want 0", rc)
+	}
+
+	proposalDir := filepath.Join(dir, ".reasonix-ahe", "proposals", "p-0001-apply")
+	manifest := completeCLIProposalManifest()
+	manifest.ProposalID = "p-0001-apply"
+	manifest.BaseSnapshot = "h-0001"
+	manifest.TargetSnapshot = ""
+	writeCLIJSON(t, filepath.Join(proposalDir, "manifest.json"), manifest)
+	writeCLIProposalPatch(t, proposalDir, "one", "two")
+
+	out := captureStdout(t, func() {
+		if rc := Run([]string{"lab", "proposal", "apply", proposalDir}, "test-version"); rc != 0 {
+			t.Fatalf("proposal apply rc = %d, want 0", rc)
+		}
+	})
+	if !strings.Contains(out, "proposal\tp-0001-apply") ||
+		!strings.Contains(out, "target_snapshot\th-0002") ||
+		!strings.Contains(out, "apply_result\t") {
+		t.Fatalf("proposal apply output = %q, want proposal, target snapshot, result", out)
+	}
+	check, err := lab.CheckProposal(proposalDir)
+	if err != nil {
+		t.Fatalf("CheckProposal: %v", err)
+	}
+	if check.Manifest.TargetSnapshot != "h-0002" {
+		t.Fatalf("manifest target = %q, want h-0002", check.Manifest.TargetSnapshot)
+	}
+	current, err := os.ReadFile(filepath.Join(dir, ".reasonix-harness", "source", "prompts", "system.md"))
+	if err != nil {
+		t.Fatalf("read current source: %v", err)
+	}
+	if string(current) != "one\n" {
+		t.Fatalf("current source = %q, want unchanged one", current)
+	}
+}
+
 func TestLabProposalRejectsBadArguments(t *testing.T) {
 	tempChdir(t)
 	for _, args := range [][]string{
@@ -104,6 +150,11 @@ func TestLabProposalRejectsBadArguments(t *testing.T) {
 		{"lab", "proposal", "check", "one", "two"},
 		{"lab", "proposal", "status"},
 		{"lab", "proposal", "status", "one", "two"},
+		{"lab", "proposal", "apply"},
+		{"lab", "proposal", "apply", "one", "two"},
+		{"lab", "proposal", "apply", "dir", "--unknown"},
+		{"lab", "proposal", "apply", "dir", "--eval"},
+		{"lab", "proposal", "apply", "dir", "--trace-mode", "loud"},
 		{"lab", "proposal", "accept"},
 		{"lab", "proposal", "accept", "dir", "--unknown"},
 		{"lab", "proposal", "reject"},
@@ -170,5 +221,18 @@ func createTwoCLIHarnessSnapshots(t *testing.T) {
 	}
 	if rc := Run([]string{"lab", "harness", "snapshot", "create"}, "test-version"); rc != 0 {
 		t.Fatalf("snapshot create h-0002 rc = %d, want 0", rc)
+	}
+}
+
+func writeCLIProposalPatch(t *testing.T, dir, from, to string) {
+	t.Helper()
+	patch := "diff --git a/prompts/system.md b/prompts/system.md\n" +
+		"--- a/prompts/system.md\n" +
+		"+++ b/prompts/system.md\n" +
+		"@@ -1 +1 @@\n" +
+		"-" + from + "\n" +
+		"+" + to + "\n"
+	if err := os.WriteFile(filepath.Join(dir, lab.ProposalDiffFile), []byte(patch), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }

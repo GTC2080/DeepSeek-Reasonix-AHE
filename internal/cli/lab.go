@@ -138,6 +138,36 @@ func labProposalCommand(args []string) int {
 		}
 		fmt.Printf("status\t%s\t%s\n", status.Status.ProposalID, status.Status.State)
 		return 0
+	case "apply":
+		cfg, ok := parseLabProposalApplyArgs(args[1:])
+		if !ok {
+			labProposalUsage()
+			return 2
+		}
+		mode, err := trace.ParseMode(cfg.traceMode)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
+			labProposalUsage()
+			return 2
+		}
+		applied, err := lab.ApplyProposal(context.Background(), lab.ProposalApplyOptions{
+			Dir: cfg.dir, EvalPath: cfg.evalPath, Bin: cfg.bin,
+			Model: cfg.model, TraceMode: mode,
+		})
+		if applied.ProposalID != "" {
+			fmt.Printf("proposal\t%s\n", applied.ProposalID)
+			if applied.TargetSnapshot != "" {
+				fmt.Printf("target_snapshot\t%s\n", applied.TargetSnapshot)
+			}
+			if applied.ResultPath != "" {
+				fmt.Printf("apply_result\t%s\n", applied.ResultPath)
+			}
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
+			return 1
+		}
+		return 0
 	case "accept":
 		cfg, ok := parseLabProposalAcceptArgs(args[1:])
 		if !ok {
@@ -222,6 +252,55 @@ func parseLabProposalAcceptArgs(args []string) (labProposalAcceptArgs, bool) {
 				return labProposalAcceptArgs{}, false
 			}
 			cfg.dir = arg
+		}
+	}
+	return cfg, cfg.dir != ""
+}
+
+type labProposalApplyArgs struct {
+	dir       string
+	evalPath  string
+	bin       string
+	model     string
+	traceMode string
+}
+
+func parseLabProposalApplyArgs(args []string) (labProposalApplyArgs, bool) {
+	cfg := labProposalApplyArgs{bin: lab.DefaultReasonixBin(), traceMode: string(trace.ModeMetadata)}
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--eval":
+			i++
+			if i >= len(args) {
+				return labProposalApplyArgs{}, false
+			}
+			cfg.evalPath = strings.TrimSpace(args[i])
+		case "--bin":
+			i++
+			if i >= len(args) {
+				return labProposalApplyArgs{}, false
+			}
+			cfg.bin = args[i]
+		case "--model":
+			i++
+			if i >= len(args) {
+				return labProposalApplyArgs{}, false
+			}
+			cfg.model = args[i]
+		case "--trace-mode":
+			i++
+			if i >= len(args) {
+				return labProposalApplyArgs{}, false
+			}
+			cfg.traceMode = args[i]
+		default:
+			if len(args[i]) > 0 && args[i][0] == '-' {
+				return labProposalApplyArgs{}, false
+			}
+			if cfg.dir != "" {
+				return labProposalApplyArgs{}, false
+			}
+			cfg.dir = args[i]
 		}
 	}
 	return cfg, cfg.dir != ""
@@ -583,6 +662,7 @@ func labProposalUsage() {
 	fmt.Fprintln(os.Stderr, "  reasonix lab proposal create --base <snapshot-id> --name <name>")
 	fmt.Fprintln(os.Stderr, "  reasonix lab proposal check <proposal-dir>")
 	fmt.Fprintln(os.Stderr, "  reasonix lab proposal status <proposal-dir>")
+	fmt.Fprintln(os.Stderr, "  reasonix lab proposal apply <proposal-dir> [--eval <task-or-suite>] [--bin path] [--model name] [--trace-mode metadata|preview|full]")
 	fmt.Fprintln(os.Stderr, "  reasonix lab proposal accept <proposal-dir> [--activate] [--pin-target]")
 	fmt.Fprintln(os.Stderr, "  reasonix lab proposal reject <proposal-dir> --reason <text>")
 }

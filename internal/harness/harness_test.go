@@ -36,6 +36,12 @@ func TestInitCreatesExpectedSourceLayoutAndIsIdempotent(t *testing.T) {
 func TestCreateSnapshotWritesLockAndIncrementsID(t *testing.T) {
 	l := NewLayout(filepath.Join(t.TempDir(), RootDir))
 	now := time.Date(2026, 6, 5, 12, 0, 0, 0, time.UTC)
+	if err := l.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(l.SourceDir(), "prompts", "system.md"), []byte("base\n"), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
 
 	first, err := l.CreateSnapshot(now)
 	if err != nil {
@@ -54,6 +60,13 @@ func TestCreateSnapshotWritesLockAndIncrementsID(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(l.SnapshotDir(first.SnapshotID), LockFile)); err != nil {
 		t.Fatalf("lock file missing: %v", err)
+	}
+	copied, err := os.ReadFile(filepath.Join(l.SnapshotSourceDir(first.SnapshotID), "prompts", "system.md"))
+	if err != nil {
+		t.Fatalf("snapshot source missing: %v", err)
+	}
+	if string(copied) != "base\n" {
+		t.Fatalf("snapshot source = %q, want base", copied)
 	}
 }
 
@@ -82,6 +95,46 @@ func TestCreateSnapshotHashesSourceChanges(t *testing.T) {
 	}
 	if first.StablePrefixHash == second.StablePrefixHash {
 		t.Fatalf("stable prefix hash should change after source edit: %q", first.StablePrefixHash)
+	}
+}
+
+func TestCreateSnapshotFromSourceDoesNotModifyCurrentSource(t *testing.T) {
+	l := NewLayout(filepath.Join(t.TempDir(), RootDir))
+	if err := l.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	current := filepath.Join(l.SourceDir(), "prompts", "system.md")
+	if err := os.WriteFile(current, []byte("current\n"), 0o644); err != nil {
+		t.Fatalf("write current source: %v", err)
+	}
+
+	staged := filepath.Join(t.TempDir(), "staged")
+	for _, rel := range []string{"prompts", "tool_descriptions", "skills", "middleware", "routing"} {
+		if err := os.MkdirAll(filepath.Join(staged, rel), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(staged, "prompts", "system.md"), []byte("staged\n"), 0o644); err != nil {
+		t.Fatalf("write staged source: %v", err)
+	}
+
+	lock, err := l.CreateSnapshotFromSource(staged, time.Unix(1, 0).UTC())
+	if err != nil {
+		t.Fatalf("CreateSnapshotFromSource: %v", err)
+	}
+	got, err := os.ReadFile(current)
+	if err != nil {
+		t.Fatalf("read current source: %v", err)
+	}
+	if string(got) != "current\n" {
+		t.Fatalf("current source = %q, want unchanged", got)
+	}
+	copied, err := os.ReadFile(filepath.Join(l.SnapshotSourceDir(lock.SnapshotID), "prompts", "system.md"))
+	if err != nil {
+		t.Fatalf("read snapshot source: %v", err)
+	}
+	if string(copied) != "staged\n" {
+		t.Fatalf("snapshot source = %q, want staged", copied)
 	}
 }
 

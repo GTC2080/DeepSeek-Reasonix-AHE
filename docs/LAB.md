@@ -49,6 +49,14 @@ snapshots, or modify live sessions.
 Without `status.json`, invalid manifests are `draft` and valid manifests are
 `ready`.
 
+`reasonix lab proposal apply <proposal-dir> [--eval <task-or-suite>] [--bin path]
+[--model name] [--trace-mode metadata|preview|full]` applies `diff.patch` in a
+temporary copy of the base harness source, creates a target snapshot with its
+own `source/` copy, and writes an apply result under the proposal directory. It
+does not overwrite `.reasonix-harness/source`, accept the proposal, or activate
+the target snapshot. When `--eval` is provided, the target snapshot is activated
+only for the eval run and the previous active snapshot is restored afterward.
+
 `reasonix lab proposal accept <proposal-dir> [--activate] [--pin-target]`
 records an accepted review for a valid manifest whose target snapshot already
 exists. The optional flags activate and pin that target snapshot.

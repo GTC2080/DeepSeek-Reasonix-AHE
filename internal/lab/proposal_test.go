@@ -1,6 +1,7 @@
 package lab
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -226,6 +227,298 @@ func TestRejectProposalRequiresReasonAndBlocksRepeatTransitions(t *testing.T) {
 	}
 }
 
+func TestApplyProposalCreatesTargetSnapshotWithoutChangingCurrentSource(t *testing.T) {
+	root := t.TempDir()
+	layout := harness.NewLayout(filepath.Join(root, harness.RootDir))
+	if err := layout.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	writeHarnessPrompt(t, layout, "one\n")
+	base, err := layout.CreateSnapshot(time.Unix(1, 0).UTC())
+	if err != nil {
+		t.Fatalf("CreateSnapshot base: %v", err)
+	}
+	proposalDir := filepath.Join(root, DefaultAHERoot, "proposals", "p-0001-apply")
+	writeApplyReadyProposal(t, proposalDir, "p-0001-apply", base.SnapshotID)
+	writeProposalPatch(t, proposalDir, "one", "two")
+
+	result, err := ApplyProposal(context.Background(), ProposalApplyOptions{
+		Dir: proposalDir, HarnessRoot: layout.Root,
+		Now:       func() time.Time { return time.Unix(10, 0).UTC() },
+		AttemptID: "attempt-test",
+	})
+	if err != nil {
+		t.Fatalf("ApplyProposal: %v", err)
+	}
+	if !result.Passed || !result.ManifestUpdated || result.TargetSnapshot != "h-0002" {
+		t.Fatalf("apply result = %+v, want passing h-0002 with manifest update", result)
+	}
+	current, err := os.ReadFile(filepath.Join(layout.SourceDir(), "prompts", "system.md"))
+	if err != nil {
+		t.Fatalf("read current source: %v", err)
+	}
+	if string(current) != "one\n" {
+		t.Fatalf("current source = %q, want unchanged one", current)
+	}
+	target, err := os.ReadFile(filepath.Join(layout.SnapshotSourceDir(result.TargetSnapshot), "prompts", "system.md"))
+	if err != nil {
+		t.Fatalf("read target source: %v", err)
+	}
+	if normalizeNewlines(string(target)) != "two\n" {
+		t.Fatalf("target source = %q, want two", target)
+	}
+	var manifest ProposalManifest
+	if err := readJSON(filepath.Join(proposalDir, "manifest.json"), &manifest); err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
+	if manifest.TargetSnapshot != result.TargetSnapshot {
+		t.Fatalf("manifest target = %q, want %q", manifest.TargetSnapshot, result.TargetSnapshot)
+	}
+	if _, err := os.Stat(result.ResultPath); err != nil {
+		t.Fatalf("apply result artifact missing: %v", err)
+	}
+}
+
+func TestApplyProposalRejectsBadStateAndPatch(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		setup   func(t *testing.T, proposalDir string)
+		wantErr string
+	}{
+		{
+			name: "accepted proposal",
+			setup: func(t *testing.T, proposalDir string) {
+				writeGCProposalStatus(t, proposalDir, "p-0001-apply", ProposalStateAccepted, time.Unix(2, 0).UTC(), "")
+				writeProposalPatch(t, proposalDir, "one", "two")
+			},
+			wantErr: "already accepted",
+		},
+		{
+			name: "existing target snapshot",
+			setup: func(t *testing.T, proposalDir string) {
+				var manifest ProposalManifest
+				if err := readJSON(filepath.Join(proposalDir, "manifest.json"), &manifest); err != nil {
+					t.Fatal(err)
+				}
+				manifest.TargetSnapshot = "h-0002"
+				writeProposalManifest(t, filepath.Join(proposalDir, "manifest.json"), manifest)
+				writeProposalPatch(t, proposalDir, "one", "two")
+			},
+			wantErr: "already has target_snapshot",
+		},
+		{
+			name:    "empty diff",
+			setup:   func(t *testing.T, proposalDir string) {},
+			wantErr: "diff.patch is empty",
+		},
+		{
+			name: "unsafe diff path",
+			setup: func(t *testing.T, proposalDir string) {
+				patch := "diff --git a/../escape.md b/../escape.md\n--- a/../escape.md\n+++ b/../escape.md\n@@ -1 +1 @@\n-one\n+two\n"
+				if err := os.WriteFile(filepath.Join(proposalDir, ProposalDiffFile), []byte(patch), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantErr: "escapes harness source",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			layout := harness.NewLayout(filepath.Join(root, harness.RootDir))
+			if err := layout.Init(); err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+			writeHarnessPrompt(t, layout, "one\n")
+			base, err := layout.CreateSnapshot(time.Unix(1, 0).UTC())
+			if err != nil {
+				t.Fatalf("CreateSnapshot base: %v", err)
+			}
+			proposalDir := filepath.Join(root, DefaultAHERoot, "proposals", "p-0001-apply")
+			writeApplyReadyProposal(t, proposalDir, "p-0001-apply", base.SnapshotID)
+			tc.setup(t, proposalDir)
+			_, err = ApplyProposal(context.Background(), ProposalApplyOptions{
+				Dir: proposalDir, HarnessRoot: layout.Root, AttemptID: "attempt-test",
+				Now: func() time.Time { return time.Unix(10, 0).UTC() },
+			})
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("ApplyProposal err = %v, want %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestApplyProposalLockOnlyBaseRequiresCurrentSourceMatch(t *testing.T) {
+	t.Run("matching current source fallback succeeds", func(t *testing.T) {
+		root := t.TempDir()
+		layout := harness.NewLayout(filepath.Join(root, harness.RootDir))
+		if err := layout.Init(); err != nil {
+			t.Fatalf("Init: %v", err)
+		}
+		writeHarnessPrompt(t, layout, "one\n")
+		base, err := layout.CreateSnapshot(time.Unix(1, 0).UTC())
+		if err != nil {
+			t.Fatalf("CreateSnapshot base: %v", err)
+		}
+		if err := os.RemoveAll(layout.SnapshotSourceDir(base.SnapshotID)); err != nil {
+			t.Fatalf("remove snapshot source: %v", err)
+		}
+		proposalDir := filepath.Join(root, DefaultAHERoot, "proposals", "p-0001-apply")
+		writeApplyReadyProposal(t, proposalDir, "p-0001-apply", base.SnapshotID)
+		writeProposalPatch(t, proposalDir, "one", "two")
+		result, err := ApplyProposal(context.Background(), ProposalApplyOptions{
+			Dir: proposalDir, HarnessRoot: layout.Root, AttemptID: "attempt-test",
+			Now: func() time.Time { return time.Unix(10, 0).UTC() },
+		})
+		if err != nil {
+			t.Fatalf("ApplyProposal fallback: %v", err)
+		}
+		if result.TargetSnapshot != "h-0002" {
+			t.Fatalf("target = %q, want h-0002", result.TargetSnapshot)
+		}
+	})
+
+	t.Run("drifted current source fallback fails", func(t *testing.T) {
+		root := t.TempDir()
+		layout := harness.NewLayout(filepath.Join(root, harness.RootDir))
+		if err := layout.Init(); err != nil {
+			t.Fatalf("Init: %v", err)
+		}
+		writeHarnessPrompt(t, layout, "one\n")
+		base, err := layout.CreateSnapshot(time.Unix(1, 0).UTC())
+		if err != nil {
+			t.Fatalf("CreateSnapshot base: %v", err)
+		}
+		if err := os.RemoveAll(layout.SnapshotSourceDir(base.SnapshotID)); err != nil {
+			t.Fatalf("remove snapshot source: %v", err)
+		}
+		writeHarnessPrompt(t, layout, "drift\n")
+		proposalDir := filepath.Join(root, DefaultAHERoot, "proposals", "p-0001-apply")
+		writeApplyReadyProposal(t, proposalDir, "p-0001-apply", base.SnapshotID)
+		writeProposalPatch(t, proposalDir, "one", "two")
+		_, err = ApplyProposal(context.Background(), ProposalApplyOptions{
+			Dir: proposalDir, HarnessRoot: layout.Root, AttemptID: "attempt-test",
+			Now: func() time.Time { return time.Unix(10, 0).UTC() },
+		})
+		if err == nil || !strings.Contains(err.Error(), "current source does not match") {
+			t.Fatalf("ApplyProposal drift err = %v, want current source mismatch", err)
+		}
+	})
+}
+
+func TestApplyProposalEvalGateFailureKeepsManifestAndRestoresActive(t *testing.T) {
+	root := t.TempDir()
+	layout := harness.NewLayout(filepath.Join(root, harness.RootDir))
+	if err := layout.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	writeHarnessPrompt(t, layout, "one\n")
+	base, err := layout.CreateSnapshot(time.Unix(1, 0).UTC())
+	if err != nil {
+		t.Fatalf("CreateSnapshot base: %v", err)
+	}
+	writeHarnessPrompt(t, layout, "active\n")
+	active, err := layout.CreateSnapshot(time.Unix(2, 0).UTC())
+	if err != nil {
+		t.Fatalf("CreateSnapshot active: %v", err)
+	}
+	if err := layout.Activate(active.SnapshotID); err != nil {
+		t.Fatalf("Activate: %v", err)
+	}
+	proposalDir := filepath.Join(root, DefaultAHERoot, "proposals", "p-0001-apply")
+	manifest := writeApplyReadyProposal(t, proposalDir, "p-0001-apply", base.SnapshotID)
+	manifest.AcceptanceRules.MinCacheHitRatio = 0.9
+	manifest.AcceptanceRules.MinSmokePassRate = 1
+	manifest.AcceptanceRules.MinCanaryPassRate = 0
+	writeProposalManifest(t, filepath.Join(proposalDir, "manifest.json"), manifest)
+	writeProposalPatch(t, proposalDir, "one", "two")
+	taskDir := writeLabTask(t, filepath.Join(root, "benchmarks", "smoke"), labTaskSpec{
+		ID: "smoke", Prompt: "fix calc",
+		Files:  map[string]string{"calc.py": "def add(a, b):\n    return a - b\n"},
+		Verify: "grep -q \"return a + b\" calc.py\n",
+	})
+
+	result, err := ApplyProposal(context.Background(), ProposalApplyOptions{
+		Dir: proposalDir, HarnessRoot: layout.Root, EvalPath: taskDir, Bin: fakeReasonixBin(t),
+		AttemptID: "attempt-test", Now: func() time.Time { return time.Unix(10, 0).UTC() },
+	})
+	if err == nil || !strings.Contains(err.Error(), "cache hit ratio") {
+		t.Fatalf("ApplyProposal gate err = %v, want cache gate failure", err)
+	}
+	if result.TargetSnapshot != "h-0003" || result.ManifestUpdated {
+		t.Fatalf("apply result = %+v, want h-0003 without manifest update", result)
+	}
+	var updated ProposalManifest
+	if err := readJSON(filepath.Join(proposalDir, "manifest.json"), &updated); err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
+	if updated.TargetSnapshot != "" {
+		t.Fatalf("manifest target = %q, want empty after failed gate", updated.TargetSnapshot)
+	}
+	activeNow, err := layout.Active()
+	if err != nil {
+		t.Fatalf("Active: %v", err)
+	}
+	if activeNow != active.SnapshotID {
+		t.Fatalf("active = %q, want restored %q", activeNow, active.SnapshotID)
+	}
+	if _, err := os.Stat(result.ResultPath); err != nil {
+		t.Fatalf("apply result artifact missing: %v", err)
+	}
+}
+
+func TestApplyProposalPassingEvalGateUpdatesManifest(t *testing.T) {
+	root := t.TempDir()
+	layout := harness.NewLayout(filepath.Join(root, harness.RootDir))
+	if err := layout.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	writeHarnessPrompt(t, layout, "one\n")
+	base, err := layout.CreateSnapshot(time.Unix(1, 0).UTC())
+	if err != nil {
+		t.Fatalf("CreateSnapshot base: %v", err)
+	}
+	proposalDir := filepath.Join(root, DefaultAHERoot, "proposals", "p-0001-apply")
+	manifest := writeApplyReadyProposal(t, proposalDir, "p-0001-apply", base.SnapshotID)
+	manifest.AcceptanceRules.MinCacheHitRatio = 0.5
+	manifest.AcceptanceRules.MinSmokePassRate = 1
+	manifest.AcceptanceRules.MinCanaryPassRate = 0
+	writeProposalManifest(t, filepath.Join(proposalDir, "manifest.json"), manifest)
+	writeProposalPatch(t, proposalDir, "one", "two")
+	taskDir := writeLabTask(t, filepath.Join(root, "benchmarks", "smoke"), labTaskSpec{
+		ID: "smoke", Prompt: "fix calc",
+		Files:  map[string]string{"calc.py": "def add(a, b):\n    return a - b\n"},
+		Verify: "grep -q \"return a + b\" calc.py\n",
+	})
+
+	result, err := ApplyProposal(context.Background(), ProposalApplyOptions{
+		Dir: proposalDir, HarnessRoot: layout.Root, EvalPath: taskDir, Bin: fakeReasonixBin(t),
+		AttemptID: "attempt-test", Now: func() time.Time { return time.Unix(10, 0).UTC() },
+	})
+	if err != nil {
+		t.Fatalf("ApplyProposal passing gate: %v", err)
+	}
+	if !result.Passed || !result.ManifestUpdated || result.TargetSnapshot != "h-0002" {
+		t.Fatalf("apply result = %+v, want passing h-0002 with manifest update", result)
+	}
+	if result.Gate.SmokeTotal != 1 || result.Gate.SmokePassed != 1 || result.Gate.CacheHitRatio != 0.5 {
+		t.Fatalf("gate = %+v, want one passing smoke task and 0.5 cache ratio", result.Gate)
+	}
+	var updated ProposalManifest
+	if err := readJSON(filepath.Join(proposalDir, "manifest.json"), &updated); err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
+	if updated.TargetSnapshot != result.TargetSnapshot {
+		t.Fatalf("manifest target = %q, want %q", updated.TargetSnapshot, result.TargetSnapshot)
+	}
+	activeNow, err := layout.Active()
+	if err != nil {
+		t.Fatalf("Active: %v", err)
+	}
+	if activeNow != "" {
+		t.Fatalf("active = %q, want restored empty", activeNow)
+	}
+}
+
 func completeProposalManifest() ProposalManifest {
 	return ProposalManifest{
 		ProposalID:        "p-0001-post-success-guard",
@@ -262,6 +555,46 @@ func writeReadyProposal(t *testing.T, dir, proposalID, targetSnapshot string) Pr
 	return manifest
 }
 
+func writeApplyReadyProposal(t *testing.T, dir, proposalID, baseSnapshot string) ProposalManifest {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := completeProposalManifest()
+	manifest.ProposalID = proposalID
+	manifest.BaseSnapshot = baseSnapshot
+	manifest.TargetSnapshot = ""
+	writeProposalManifest(t, filepath.Join(dir, "manifest.json"), manifest)
+	if err := os.WriteFile(filepath.Join(dir, ProposalDiffFile), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return manifest
+}
+
+func writeHarnessPrompt(t *testing.T, layout harness.Layout, body string) {
+	t.Helper()
+	path := filepath.Join(layout.SourceDir(), "prompts", "system.md")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeProposalPatch(t *testing.T, dir, from, to string) {
+	t.Helper()
+	patch := "diff --git a/prompts/system.md b/prompts/system.md\n" +
+		"--- a/prompts/system.md\n" +
+		"+++ b/prompts/system.md\n" +
+		"@@ -1 +1 @@\n" +
+		"-" + from + "\n" +
+		"+" + to + "\n"
+	if err := os.WriteFile(filepath.Join(dir, ProposalDiffFile), []byte(patch), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func writeProposalManifest(t *testing.T, path string, manifest ProposalManifest) {
 	t.Helper()
 	if err := writeJSON(path, manifest); err != nil {
@@ -276,4 +609,8 @@ func stringListContains(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func normalizeNewlines(s string) string {
+	return strings.ReplaceAll(s, "\r\n", "\n")
 }

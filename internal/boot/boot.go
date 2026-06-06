@@ -486,6 +486,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		ProjectChecks:           projectChecks,
 		HarnessSnapshot:         activeHarness.SnapshotID,
 		HarnessStablePrefixHash: activeHarness.Lock.StablePrefixHash,
+		Policies:                activeHarness.Policies,
 		ContextWindow:           entry.ContextWindow,
 		SoftCompactRatio:        cfg.Agent.SoftCompactRatio,
 		CompactRatio:            cfg.Agent.CompactRatio,

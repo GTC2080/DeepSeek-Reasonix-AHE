@@ -14,6 +14,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"reasonix/internal/harnesspolicy"
 )
 
 const (
@@ -54,6 +56,7 @@ type ActiveSnapshot struct {
 	SourceDir        string
 	PromptOverlay    string
 	ToolDescriptions map[string]string
+	Policies         harnesspolicy.PolicySet
 }
 
 // NewLayout returns a harness layout rooted at root, or .reasonix-harness when
@@ -128,6 +131,9 @@ func (l Layout) CreateSnapshotFromSource(sourceDir string, createdAt time.Time) 
 		return Lock{}, fmt.Errorf("source dir is required")
 	}
 	if err := l.ensureSnapshotLayout(); err != nil {
+		return Lock{}, err
+	}
+	if _, err := harnesspolicy.LoadDir(filepath.Join(sourceDir, "middleware")); err != nil {
 		return Lock{}, err
 	}
 	id, err := l.nextSnapshotID()
@@ -255,12 +261,17 @@ func (l Layout) LoadSnapshotSource(id string) (ActiveSnapshot, error) {
 	if err != nil {
 		return ActiveSnapshot{}, err
 	}
+	policies, err := harnesspolicy.LoadDir(filepath.Join(sourceDir, "middleware"))
+	if err != nil {
+		return ActiveSnapshot{}, err
+	}
 	return ActiveSnapshot{
 		SnapshotID:       id,
 		Lock:             lock,
 		SourceDir:        sourceDir,
 		PromptOverlay:    overlay,
 		ToolDescriptions: descriptions,
+		Policies:         policies,
 	}, nil
 }
 

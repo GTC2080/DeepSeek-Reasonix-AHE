@@ -279,6 +279,63 @@ func TestApplyProposalCreatesTargetSnapshotWithoutChangingCurrentSource(t *testi
 	}
 }
 
+func TestApplyProposalRejectsInvalidTargetMiddlewarePolicy(t *testing.T) {
+	root := t.TempDir()
+	layout := harness.NewLayout(filepath.Join(root, harness.RootDir))
+	if err := layout.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	writeHarnessPrompt(t, layout, "one\n")
+	writeHarnessMiddleware(t, layout, "final_answer_readiness.toml", `version = "middleware.v0.1"
+id = "final_answer_readiness"
+enabled = true
+stage = "final_answer"
+action = "block_and_nudge"
+`)
+	base, err := layout.CreateSnapshot(time.Unix(1, 0).UTC())
+	if err != nil {
+		t.Fatalf("CreateSnapshot base: %v", err)
+	}
+	proposalDir := filepath.Join(root, DefaultAHERoot, "proposals", "p-0001-apply")
+	writeApplyReadyProposal(t, proposalDir, "p-0001-apply", base.SnapshotID)
+	patch := `diff --git a/middleware/final_answer_readiness.toml b/middleware/final_answer_readiness.toml
+--- a/middleware/final_answer_readiness.toml
++++ b/middleware/final_answer_readiness.toml
+@@ -1,5 +1,5 @@
+ version = "middleware.v0.1"
+ id = "final_answer_readiness"
+ enabled = true
+-stage = "final_answer"
++stage = "not_a_stage"
+ action = "block_and_nudge"
+`
+	if err := os.WriteFile(filepath.Join(proposalDir, ProposalDiffFile), []byte(patch), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := ApplyProposal(context.Background(), ProposalApplyOptions{
+		Dir: proposalDir, HarnessRoot: layout.Root,
+		Now:       func() time.Time { return time.Unix(10, 0).UTC() },
+		AttemptID: "attempt-test",
+	})
+	if err == nil || !strings.Contains(err.Error(), "stage \"not_a_stage\" is invalid") {
+		t.Fatalf("ApplyProposal err = %v, want invalid middleware stage", err)
+	}
+	if result.TargetSnapshot != "" || result.ManifestUpdated || result.Passed {
+		t.Fatalf("apply result = %+v, want no target snapshot or manifest update", result)
+	}
+	var manifest ProposalManifest
+	if err := readJSON(filepath.Join(proposalDir, "manifest.json"), &manifest); err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
+	if manifest.TargetSnapshot != "" {
+		t.Fatalf("manifest target = %q, want empty", manifest.TargetSnapshot)
+	}
+	if _, err := layout.Inspect("h-0002"); err == nil {
+		t.Fatal("invalid middleware proposal created h-0002, want no target snapshot")
+	}
+}
+
 func TestApplyProposalRejectsBadStateAndPatch(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -574,6 +631,17 @@ func writeApplyReadyProposal(t *testing.T, dir, proposalID, baseSnapshot string)
 func writeHarnessPrompt(t *testing.T, layout harness.Layout, body string) {
 	t.Helper()
 	path := filepath.Join(layout.SourceDir(), "prompts", "system.md")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeHarnessMiddleware(t *testing.T, layout harness.Layout, name, body string) {
+	t.Helper()
+	path := filepath.Join(layout.SourceDir(), "middleware", name)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}

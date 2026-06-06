@@ -92,6 +92,9 @@ const (
 	// CacheContractViolation marks a session cache-contract drift detected before
 	// a provider request. It is warning-only in v0.1.
 	CacheContractViolation
+	// MiddlewarePolicyDecision records an executable AHE middleware decision at a
+	// runtime boundary. It is trace/audit metadata; frontends may ignore it.
+	MiddlewarePolicyDecision
 )
 
 // Level classifies a Notice so sinks can style or filter it.
@@ -234,6 +237,19 @@ type CacheContractViolationPayload struct {
 	Reasons                 []string           `json:"reasons"`
 }
 
+// MiddlewarePolicyDecisionPayload is trace-safe metadata for one executable
+// harness middleware decision.
+type MiddlewarePolicyDecisionPayload struct {
+	HarnessSnapshot string `json:"harness_snapshot,omitempty"`
+	PolicyID        string `json:"policy_id"`
+	Stage           string `json:"stage"`
+	Action          string `json:"action"`
+	Reason          string `json:"reason,omitempty"`
+	Turn            int    `json:"turn,omitempty"`
+	Step            int    `json:"step,omitempty"`
+	ToolName        string `json:"tool_name,omitempty"`
+}
+
 // Event is one increment in a turn's event stream. Read the field(s) documented
 // for Kind; the others are zero.
 type Event struct {
@@ -248,17 +264,18 @@ type Event struct {
 	// session (Usage events only), so a frontend can show the aggregate hit-rate
 	// — which doesn't crater on a short turn or after compaction — alongside
 	// Usage's single-turn numbers.
-	SessionHit    int                           // Usage: cumulative cache-hit prompt tokens this session
-	SessionMiss   int                           // Usage: cumulative cache-miss prompt tokens this session
-	Level         Level                         // Notice
-	Approval      Approval                      // ApprovalRequest
-	Ask           Ask                           // AskRequest
-	Err           error                         // TurnDone: non-nil on failure
-	Compaction    Compaction                    // Compaction
-	RetryAttempt  int                           // Retrying: 1-based attempt about to be made
-	RetryMax      int                           // Retrying: total attempts before giving up
-	Model         ModelCall                     // ModelRequest / ModelResponse
-	CacheContract CacheContractViolationPayload // CacheContractViolation
+	SessionHit               int                             // Usage: cumulative cache-hit prompt tokens this session
+	SessionMiss              int                             // Usage: cumulative cache-miss prompt tokens this session
+	Level                    Level                           // Notice
+	Approval                 Approval                        // ApprovalRequest
+	Ask                      Ask                             // AskRequest
+	Err                      error                           // TurnDone: non-nil on failure
+	Compaction               Compaction                      // Compaction
+	RetryAttempt             int                             // Retrying: 1-based attempt about to be made
+	RetryMax                 int                             // Retrying: total attempts before giving up
+	Model                    ModelCall                       // ModelRequest / ModelResponse
+	CacheContract            CacheContractViolationPayload   // CacheContractViolation
+	MiddlewarePolicyDecision MiddlewarePolicyDecisionPayload // MiddlewarePolicyDecision
 }
 
 // Sink consumes a turn's events. The agent calls Emit serially from its run

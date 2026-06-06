@@ -94,6 +94,12 @@ func applyTraceEvent(report *CacheReport, ev trace.Event, cacheStatsEvents *int)
 		if report.HarnessSnapshot == "" {
 			report.HarnessSnapshot = stringData(ev.Data, "harness_snapshot")
 		}
+	case "middleware_policy_decision":
+		report.MiddlewarePolicyDecisions++
+		report.MiddlewarePolicyIDs = appendUnique(report.MiddlewarePolicyIDs, stringData(ev.Data, "policy_id"))
+		if report.HarnessSnapshot == "" {
+			report.HarnessSnapshot = stringData(ev.Data, "harness_snapshot")
+		}
 	}
 }
 
@@ -113,6 +119,10 @@ func FormatCacheReport(report CacheReport) string {
 	reportLine(&b, "Contract violations", strconv.Itoa(report.ContractViolations))
 	if len(report.ContractViolationReasons) > 0 {
 		reportLine(&b, "Violation reasons", strings.Join(report.ContractViolationReasons, ", "))
+	}
+	reportLine(&b, "Middleware policy decisions", strconv.Itoa(report.MiddlewarePolicyDecisions))
+	if len(report.MiddlewarePolicyIDs) > 0 {
+		reportLine(&b, "Middleware policy ids", strings.Join(report.MiddlewarePolicyIDs, ", "))
 	}
 	if len(report.Warnings) > 0 {
 		reportLine(&b, "Warnings", strings.Join(report.Warnings, "; "))

@@ -16,6 +16,7 @@ import (
 	"reasonix/internal/event"
 	"reasonix/internal/evidence"
 	"reasonix/internal/harness"
+	"reasonix/internal/harnesspolicy"
 	"reasonix/internal/instruction"
 	"reasonix/internal/jobs"
 	"reasonix/internal/memory"
@@ -199,6 +200,8 @@ type Agent struct {
 	// verify against same-turn bash receipts after a write-backed completion.
 	projectChecks []instruction.VerifyCheck
 
+	policies harnesspolicy.PolicySet
+
 	// memQueue, when non-nil, lets the remember/forget tools fold a turn-tail note
 	// about a just-made memory change into the next turn, so it applies this
 	// session without touching the cache-stable prefix. Set via SetMemoryQueue.
@@ -356,6 +359,10 @@ type Options struct {
 	// prompt/tool injection happens before New receives the session and registry.
 	HarnessSnapshot         string
 	HarnessStablePrefixHash string
+
+	// Policies are executable AHE middleware policies loaded from the active
+	// harness snapshot at session start.
+	Policies harnesspolicy.PolicySet
 }
 
 // New constructs an Agent. MaxSteps <= 0 means no cap — the run loop continues
@@ -407,6 +414,7 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
 		jobs:                                 opts.Jobs,
 		evidence:                             evidence.NewLedger(),
 		projectChecks:                        append([]instruction.VerifyCheck(nil), opts.ProjectChecks...),
+		policies:                             opts.Policies,
 		contextWindow:                        opts.ContextWindow,
 		softCompactRatio:                     opts.SoftCompactRatio,
 		compactRatio:                         opts.CompactRatio,
@@ -473,7 +481,8 @@ func (a *Agent) Run(ctx context.Context, input string) error {
 		if len(calls) == 0 {
 			if reason := a.finalReadinessFailure(); reason != "" {
 				finalReadinessBlocks++
-				if finalReadinessBlocks >= maxFinalReadinessBlocks {
+				a.emitPolicyDecisionByID(harnesspolicy.PolicyFinalAnswerReadiness, reason, userTurn, step+1, "")
+				if finalReadinessBlocks >= a.finalReadinessBlockLimit() {
 					return fmt.Errorf("final-answer readiness failed %d times: %s", finalReadinessBlocks, reason)
 				}
 				a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: "final-answer readiness blocked: " + reason})
@@ -726,6 +735,7 @@ func (a *Agent) checkCacheContract(prefixShape PrefixShape, userTurn, step int) 
 		Reasons:                 append([]string(nil), violation.Reasons...),
 	}
 	a.sink.Emit(event.Event{Kind: event.CacheContractViolation, CacheContract: payload})
+	a.emitPolicyDecisionByID(harnesspolicy.PolicyCacheContractGuard, cacheContractWarning(violation.Reasons), userTurn, step, "")
 	a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: cacheContractWarning(violation.Reasons)})
 }
 
@@ -930,7 +940,7 @@ func (a *Agent) applyStormBreaker(calls []provider.ToolCall, outcomes []toolOutc
 		return
 	}
 	a.stormCount++
-	if a.stormCount < stormBreakThreshold {
+	if a.stormCount < a.stormBreakThreshold() {
 		return
 	}
 	subject := fmt.Sprintf("%q", calls[0].Name)
@@ -942,6 +952,7 @@ func (a *Agent) applyStormBreaker(calls []provider.ToolCall, outcomes []toolOutc
 	results[0] = outcomes[0].output + fmt.Sprintf(
 		"\n\n[loop guard] %s has now failed %d times in a row with the same error. Re-sending it — even with the wording changed — will not help: the calls keep failing the same way. Change approach: if an argument is being truncated, write less in one call and split the work into several smaller calls; otherwise fix the arguments, use a different tool, or explain the blocker in your final answer.",
 		subject, a.stormCount)
+	a.emitPolicyDecisionByID(harnesspolicy.PolicyToolErrorLoopGuard, fmt.Sprintf("%s failed %d times with the same error", short, a.stormCount), a.userTurn, 0, calls[0].Name)
 	a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: fmt.Sprintf(
 		"loop guard: %s failed %d× the same way — nudging the model to change approach",
 		short, a.stormCount)})
@@ -996,6 +1007,7 @@ func (a *Agent) executeOne(ctx context.Context, call provider.ToolCall) toolOutc
 		}
 	}
 	if out, blocked := a.repeatedSuccessBlock(call, t); blocked {
+		a.emitPolicyDecisionByID(harnesspolicy.PolicyToolErrorLoopGuard, "repeated write-like success blocked", a.userTurn, 0, call.Name)
 		return toolOutcome{
 			output:  out,
 			blocked: true,
@@ -1003,8 +1015,9 @@ func (a *Agent) executeOne(ctx context.Context, call provider.ToolCall) toolOutc
 		}
 	}
 	if a.planMode.Load() && !t.ReadOnly() {
+		reason := fmt.Sprintf("%q is a writer tool and plan mode is read-only", call.Name)
 		return toolOutcome{
-			output:  fmt.Sprintf("blocked: %q is a writer tool and plan mode is read-only. Keep exploring with read-only tools, then write your plan as your reply — the user will be asked to approve it before any changes are made.", call.Name),
+			output:  a.withPermissionRecoveryNudge(fmt.Sprintf("blocked: %s. Keep exploring with read-only tools, then write your plan as your reply — the user will be asked to approve it before any changes are made.", reason), reason, call.Name),
 			blocked: true,
 			errMsg:  "blocked: plan mode is read-only",
 		}
@@ -1012,15 +1025,16 @@ func (a *Agent) executeOne(ctx context.Context, call provider.ToolCall) toolOutc
 	if a.gate != nil {
 		allow, reason, err := a.gate.Check(ctx, call.Name, json.RawMessage(call.Arguments), t.ReadOnly())
 		if err != nil {
+			blockReason := fmt.Sprintf("%s (%v)", reason, err)
 			return toolOutcome{
-				output:  fmt.Sprintf("blocked: %s (%v)", reason, err),
+				output:  a.withPermissionRecoveryNudge("blocked: "+blockReason, blockReason, call.Name),
 				blocked: true,
 				errMsg:  fmt.Sprintf("blocked: %v", err),
 			}
 		}
 		if !allow {
 			return toolOutcome{
-				output:  "blocked: " + reason,
+				output:  a.withPermissionRecoveryNudge("blocked: "+reason, reason, call.Name),
 				blocked: true,
 				errMsg:  "blocked by permission policy",
 			}
@@ -1092,6 +1106,7 @@ func (a *Agent) executeOne(ctx context.Context, call provider.ToolCall) toolOutc
 		if !json.Valid([]byte(call.Arguments)) {
 			detail = strings.TrimRight(detail, "\n") + "\nThe arguments were not valid JSON. Re-emit them exactly per this schema:\n" + string(t.Schema())
 		}
+		detail = a.withTimeoutBudgetNudge(detail, err.Error(), call.Name)
 		body, truncMsg := truncateToolOutput(fmt.Sprintf("error: %v\n%s", err, detail))
 		return toolOutcome{output: body, errMsg: firstLine(err.Error()), truncated: truncMsg != "", truncMsg: truncMsg}
 	}
@@ -1112,12 +1127,81 @@ func (a *Agent) repeatedSuccessBlock(call provider.ToolCall, t tool.Tool) (strin
 		return "", false
 	}
 	count := a.repeatSuccessCounts[sig]
-	if count < repeatSuccessBreakThreshold {
+	if count < a.repeatSuccessBreakThreshold() {
 		return "", false
 	}
 	return fmt.Sprintf(
 		"blocked: [loop guard] %q has already succeeded %d times with the same write-like arguments in this user turn. Re-running it is unlikely to help and may burn tokens or repeat file writes. Change approach: use edit_file or multi_edit for file changes, verify with a read/test command, or explain the blocker in your final answer.",
 		call.Name, count), true
+}
+
+func (a *Agent) finalReadinessBlockLimit() int {
+	return a.policies.FinalAnswerMaxBlocks(maxFinalReadinessBlocks)
+}
+
+func (a *Agent) stormBreakThreshold() int {
+	storm, _ := a.policies.LoopGuardThresholds(stormBreakThreshold, repeatSuccessBreakThreshold)
+	return storm
+}
+
+func (a *Agent) repeatSuccessBreakThreshold() int {
+	_, repeat := a.policies.LoopGuardThresholds(stormBreakThreshold, repeatSuccessBreakThreshold)
+	return repeat
+}
+
+func (a *Agent) emitPolicyDecisionByID(id, reason string, turn, step int, toolName string) {
+	policy, ok := a.policies.Enabled(id)
+	if !ok {
+		return
+	}
+	a.emitPolicyDecision(policy, reason, turn, step, toolName)
+}
+
+func (a *Agent) emitPolicyDecision(policy harnesspolicy.Policy, reason string, turn, step int, toolName string) {
+	a.sink.Emit(event.Event{Kind: event.MiddlewarePolicyDecision, MiddlewarePolicyDecision: event.MiddlewarePolicyDecisionPayload{
+		HarnessSnapshot: a.cacheContractHarnessSnapshot,
+		PolicyID:        policy.ID,
+		Stage:           string(policy.Stage),
+		Action:          string(policy.Action),
+		Reason:          reason,
+		Turn:            turn,
+		Step:            step,
+		ToolName:        toolName,
+	}})
+}
+
+func (a *Agent) withPermissionRecoveryNudge(output, reason, toolName string) string {
+	policy, ok := a.policies.Enabled(harnesspolicy.PolicyPermissionRecovery)
+	if !ok {
+		return output
+	}
+	nudge := strings.TrimSpace(policy.Nudge)
+	if nudge == "" {
+		nudge = "Use a read-only alternative, request approval when available, or explain the blocker in the final answer."
+	}
+	a.emitPolicyDecision(policy, reason, a.userTurn, 0, toolName)
+	return output + "\n\n[middleware: permission_recovery] " + nudge
+}
+
+func (a *Agent) withTimeoutBudgetNudge(output, reason, toolName string) string {
+	if toolName != "bash" || !looksLikeTimeout(reason+" "+output) {
+		return output
+	}
+	policy, ok := a.policies.Enabled(harnesspolicy.PolicyTimeoutBudget)
+	if !ok {
+		return output
+	}
+	nudge := strings.TrimSpace(policy.Nudge)
+	if nudge == "" {
+		nudge = "Use run_in_background for long-running commands, split the command into smaller steps, or explain the blocker in the final answer."
+	}
+	a.emitPolicyDecision(policy, reason, a.userTurn, 0, toolName)
+	return strings.TrimRight(output, "\n") + "\n\n[middleware: timeout_budget] " + nudge
+}
+
+func looksLikeTimeout(text string) bool {
+	text = strings.ToLower(text)
+	return strings.Contains(text, "timed out") || strings.Contains(text, "timeout")
 }
 
 func (a *Agent) recordRepeatSuccess(call provider.ToolCall, t tool.Tool) {

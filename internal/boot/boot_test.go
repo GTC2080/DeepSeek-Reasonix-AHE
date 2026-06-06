@@ -277,6 +277,91 @@ api_key_env = "REASONIX_TEST_KEY_UNSET"
 	}
 }
 
+func TestBuildInjectsActiveHarnessPoliciesIntoAgentRuntime(t *testing.T) {
+	dir := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Chdir(dir)
+
+	layout := harness.NewLayout(filepath.Join(dir, harness.RootDir))
+	if err := layout.Init(); err != nil {
+		t.Fatalf("Init harness: %v", err)
+	}
+	writeFile(t, layout.SourceDir(), filepath.FromSlash("middleware/final_answer_readiness.toml"), `
+version = "middleware.v0.1"
+id = "final_answer_readiness"
+enabled = true
+stage = "final_answer"
+action = "block_and_nudge"
+max_final_answer_blocks = 1
+`)
+	lock, err := layout.CreateSnapshot(time.Unix(1, 0).UTC())
+	if err != nil {
+		t.Fatalf("CreateSnapshot: %v", err)
+	}
+	if err := layout.Activate(lock.SnapshotID); err != nil {
+		t.Fatalf("Activate: %v", err)
+	}
+
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "text/event-stream")
+		if calls == 1 {
+			fmt.Fprintln(w, `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"write_file","arguments":"{\"path\":\"changed.go\",\"content\":\"package main\\n\"}"}}]}}]}`)
+			fmt.Fprintln(w)
+			fmt.Fprintln(w, `data: {"choices":[{"delta":{"tool_calls":[{"index":1,"id":"c2","type":"function","function":{"name":"todo_write","arguments":"{\"todos\":[{\"content\":\"Edit code\",\"status\":\"in_progress\"}]}"}}]}}]}`)
+			fmt.Fprintln(w)
+			fmt.Fprintln(w, `data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}`)
+			fmt.Fprintln(w)
+			fmt.Fprintln(w, "data: [DONE]")
+			fmt.Fprintln(w)
+			return
+		}
+		fmt.Fprintln(w, `data: {"choices":[{"delta":{"content":"premature"}}],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}`)
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "data: [DONE]")
+		fmt.Fprintln(w)
+	}))
+	defer srv.Close()
+
+	writeFile(t, dir, "reasonix.toml", fmt.Sprintf(`
+default_model = "test-model"
+
+[codegraph]
+enabled = false
+
+[agent]
+system_prompt = "BASE"
+
+[[providers]]
+name = "test-model"
+kind = "openai"
+base_url = %q
+model = "x"
+api_key_env = "REASONIX_TEST_KEY_UNSET"
+`, srv.URL))
+
+	ctrl, err := Build(context.Background(), Options{})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	defer ctrl.Close()
+
+	err = ctrl.Run(context.Background(), "edit with todo and never sign off")
+	if err == nil {
+		t.Fatal("expected active harness policy to stop readiness retry")
+	}
+	if !strings.Contains(err.Error(), "final-answer readiness") {
+		t.Fatalf("Run err = %v, want final-answer readiness", err)
+	}
+	if calls != 2 {
+		t.Fatalf("provider calls = %d, want one tool call request and one blocked final answer", calls)
+	}
+}
+
 func TestAddBuiltinsWithWorkspaceRootKeepsSessionTools(t *testing.T) {
 	reg := tool.NewRegistry()
 	var stderr bytes.Buffer

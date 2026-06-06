@@ -291,6 +291,10 @@ func formatTaskEvidence(data distillTaskData) string {
 	b.WriteString("\n```\n\n")
 	b.WriteString("## Tool-call summary\n\n")
 	writeStringCountList(&b, data.Trace.ToolCalls)
+	if len(data.Trace.Signals) > 0 {
+		b.WriteString("\n## Trace signals\n\n")
+		writeStringList(&b, data.Trace.Signals)
+	}
 	b.WriteString("\n## Suspected failure pattern\n\n")
 	writeFailureList(&b, data.Failures)
 	b.WriteString("\n## Suggested components\n\n")
@@ -363,6 +367,10 @@ func summarizeDistillTrace(path string) (distillTraceSummary, error) {
 				if text := firstNonEmpty(stringData(ev.Data, "text"), stringData(ev.Data, "text_preview")); text != "" {
 					summary.Signals = append(summary.Signals, text)
 				}
+			case "middleware_policy_decision":
+				if signal := middlewarePolicySignal(ev.Data); signal != "" {
+					summary.Signals = append(summary.Signals, signal)
+				}
 			}
 		}
 		if readErr == io.EOF {
@@ -379,6 +387,20 @@ func summarizeDistillTrace(path string) (distillTraceSummary, error) {
 		}
 	}
 	return summary, nil
+}
+
+func middlewarePolicySignal(data map[string]any) string {
+	policyID := stringData(data, "policy_id")
+	if policyID == "" {
+		return ""
+	}
+	action := displayReportValue(stringData(data, "action"))
+	stage := displayReportValue(stringData(data, "stage"))
+	reason := firstNonEmpty(stringData(data, "reason"), stringData(data, "reason_preview"))
+	if reason == "" {
+		return fmt.Sprintf("middleware policy %s: %s at %s", policyID, action, stage)
+	}
+	return fmt.Sprintf("middleware policy %s: %s at %s: %s", policyID, action, stage, reason)
 }
 
 func writeStringCountList(b *strings.Builder, values map[string]int) {

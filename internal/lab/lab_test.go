@@ -84,6 +84,9 @@ func TestRunnerWritesArtifactsAndWarnsOnLowCacheRatio(t *testing.T) {
 	if task.CacheReport.CacheHitRatio != 0.5 {
 		t.Fatalf("cache hit ratio = %v, want 0.5", task.CacheReport.CacheHitRatio)
 	}
+	if task.CacheReport.MiddlewarePolicyDecisions != 1 || !contains(task.CacheReport.MiddlewarePolicyIDs, "timeout_budget") {
+		t.Fatalf("middleware policy cache report = %+v, want timeout_budget decision", task.CacheReport)
+	}
 	if task.HarnessSnapshot != "h-0001" {
 		t.Fatalf("harness snapshot = %q, want h-0001", task.HarnessSnapshot)
 	}
@@ -101,6 +104,13 @@ func TestRunnerWritesArtifactsAndWarnsOnLowCacheRatio(t *testing.T) {
 	}
 	if decoded.TaskID != task.TaskID || !decoded.Passed {
 		t.Fatalf("decoded result = %+v, want passing %s", decoded, task.TaskID)
+	}
+	var decodedCache CacheReport
+	if err := readJSON(filepath.Join(task.ArtifactDir, "cache_report.json"), &decodedCache); err != nil {
+		t.Fatalf("read cache report: %v", err)
+	}
+	if decodedCache.MiddlewarePolicyDecisions != 1 || !contains(decodedCache.MiddlewarePolicyIDs, "timeout_budget") {
+		t.Fatalf("decoded cache report = %+v, want timeout_budget decision", decodedCache)
 	}
 	var summary Result
 	if err := readJSON(filepath.Join(outRoot, "run-test", "result.json"), &summary); err != nil {
@@ -149,6 +159,7 @@ func TestReportTraceAggregatesCacheStatsAndDrift(t *testing.T) {
 {"version":"trace.v0.1","run_id":"r","session_id":"s","seq":3,"type":"cache_stats","time":"2026-06-05T00:00:00Z","turn":1,"data":{"prompt_cache_hit_tokens":80,"prompt_cache_miss_tokens":20,"prefix_changed":true,"prefix_change_reasons":["tools"]}}
 {"version":"trace.v0.1","run_id":"r","session_id":"s","seq":4,"type":"model_response","time":"2026-06-05T00:00:00Z","turn":1,"data":{}}
 {"version":"trace.v0.1","run_id":"r","session_id":"s","seq":5,"type":"cache_contract_violation","time":"2026-06-05T00:00:00Z","turn":1,"data":{"reasons":["tool_schema_hash"]}}
+{"version":"trace.v0.1","run_id":"r","session_id":"s","seq":6,"type":"middleware_policy_decision","time":"2026-06-05T00:00:00Z","turn":1,"data":{"harness_snapshot":"h-0007","policy_id":"cache_contract_guard","stage":"cache_contract","action":"warn","reason_preview":"cache drift"}}
 `
 	if err := os.WriteFile(tracePath, []byte(trace), 0o644); err != nil {
 		t.Fatal(err)
@@ -175,6 +186,13 @@ func TestReportTraceAggregatesCacheStatsAndDrift(t *testing.T) {
 	}
 	if report.ContractViolations != 1 || !contains(report.ContractViolationReasons, "tool_schema_hash") {
 		t.Fatalf("contract violations = %d reasons=%v, want tool_schema_hash", report.ContractViolations, report.ContractViolationReasons)
+	}
+	if report.MiddlewarePolicyDecisions != 1 || !contains(report.MiddlewarePolicyIDs, "cache_contract_guard") {
+		t.Fatalf("middleware policy decisions = %d ids=%v, want cache_contract_guard", report.MiddlewarePolicyDecisions, report.MiddlewarePolicyIDs)
+	}
+	formatted := FormatCacheReport(report)
+	if !strings.Contains(formatted, "Middleware policy decisions") || !strings.Contains(formatted, "cache_contract_guard") {
+		t.Fatalf("formatted report missing middleware policy data:\n%s", formatted)
 	}
 }
 
@@ -296,9 +314,10 @@ func main() {
 	if tracePath != "" {
 		trace := ` + "`" + `{"version":"trace.v0.1","run_id":"fake","session_id":"s","seq":1,"type":"session_start","time":"2026-06-05T00:00:00Z","turn":0,"data":{"harness_snapshot":"h-0001"}}
 {"version":"trace.v0.1","run_id":"fake","session_id":"s","seq":2,"type":"cache_stats","time":"2026-06-05T00:00:00Z","turn":1,"data":{"prompt_cache_hit_tokens":50,"prompt_cache_miss_tokens":50,"cache_hit_ratio":0.5}}
+{"version":"trace.v0.1","run_id":"fake","session_id":"s","seq":3,"type":"middleware_policy_decision","time":"2026-06-05T00:00:00Z","turn":1,"data":{"harness_snapshot":"h-0001","policy_id":"timeout_budget","stage":"post_tool","action":"nudge","reason_preview":"long command budget"}}
 ` + "`" + `
 		if os.Getenv("FAKE_CONTRACT_VIOLATION") == "1" {
-			trace += ` + "`" + `{"version":"trace.v0.1","run_id":"fake","session_id":"s","seq":3,"type":"cache_contract_violation","time":"2026-06-05T00:00:00Z","turn":1,"data":{"reasons":["tool_schema_hash"]}}
+			trace += ` + "`" + `{"version":"trace.v0.1","run_id":"fake","session_id":"s","seq":4,"type":"cache_contract_violation","time":"2026-06-05T00:00:00Z","turn":1,"data":{"reasons":["tool_schema_hash"]}}
 ` + "`" + `
 		}
 		_ = os.WriteFile(tracePath, []byte(trace), 0o644)

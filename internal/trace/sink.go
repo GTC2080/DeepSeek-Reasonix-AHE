@@ -236,6 +236,8 @@ func (s *Sink) convertLocked(e event.Event) (string, map[string]any, bool) {
 		return "model_response", modelData(e.Model), true
 	case event.CacheContractViolation:
 		return "cache_contract_violation", cacheContractData(e.CacheContract), true
+	case event.MiddlewarePolicyDecision:
+		return "middleware_policy_decision", s.middlewarePolicyDecisionData(e.MiddlewarePolicyDecision), true
 	default:
 		return "", nil, false
 	}
@@ -368,6 +370,28 @@ func cacheContractShapeData(s event.CacheContractShape) map[string]any {
 		"tool_schema_hash":   s.ToolSchemaHash,
 		"stable_prefix_hash": s.StablePrefixHash,
 	}
+}
+
+func (s *Sink) middlewarePolicyDecisionData(d event.MiddlewarePolicyDecisionPayload) map[string]any {
+	data := map[string]any{
+		"policy_id": d.PolicyID,
+		"stage":     d.Stage,
+		"action":    d.Action,
+	}
+	if d.HarnessSnapshot != "" {
+		data["harness_snapshot"] = d.HarnessSnapshot
+	}
+	if d.Turn > 0 {
+		data["turn"] = d.Turn
+	}
+	if d.Step > 0 {
+		data["step"] = d.Step
+	}
+	if d.ToolName != "" {
+		data["tool_name"] = d.ToolName
+	}
+	modeText(s.mode, "reason", d.Reason, data)
+	return data
 }
 
 func ratio(hit, miss int) float64 {

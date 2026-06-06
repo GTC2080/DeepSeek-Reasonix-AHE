@@ -22,6 +22,7 @@ func TestDistillWritesTaskReportsClustersAndRedacts(t *testing.T) {
 		Trace: `{"version":"trace.v0.1","run_id":"r","session_id":"s","seq":1,"type":"tool_call","time":"2026-06-05T00:00:00Z","turn":1,"data":{"tool_name":"read_file","partial":false}}
 {"version":"trace.v0.1","run_id":"r","session_id":"s","seq":2,"type":"tool_call","time":"2026-06-05T00:00:00Z","turn":1,"data":{"tool_name":"bash","partial":false}}
 {"version":"trace.v0.1","run_id":"r","session_id":"s","seq":3,"type":"tool_result","time":"2026-06-05T00:00:00Z","turn":1,"data":{"tool_name":"bash","error":"test failed"}}
+{"version":"trace.v0.1","run_id":"r","session_id":"s","seq":4,"type":"middleware_policy_decision","time":"2026-06-05T00:00:00Z","turn":1,"data":{"policy_id":"final_answer_readiness","stage":"final_answer","action":"block_and_nudge","reason_preview":"todo completion missing"}}
 `,
 	}})
 
@@ -42,6 +43,7 @@ func TestDistillWritesTaskReportsClustersAndRedacts(t *testing.T) {
 		"Contract violations: 1",
 		"- read_file: 1",
 		"- bash: 1",
+		"middleware policy final_answer_readiness: block_and_nudge at final_answer: todo completion missing",
 		"- verifier_failed",
 		"- premature_success",
 		"- cache_contract_broken",

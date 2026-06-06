@@ -112,6 +112,8 @@ type CacheReport struct {
 	StablePrefixHashDriftReasons []string `json:"stable_prefix_hash_drift_reasons,omitempty"`
 	ContractViolations           int      `json:"contract_violations"`
 	ContractViolationReasons     []string `json:"contract_violation_reasons,omitempty"`
+	MiddlewarePolicyDecisions    int      `json:"middleware_policy_decisions"`
+	MiddlewarePolicyIDs          []string `json:"middleware_policy_ids,omitempty"`
 	HarnessSnapshot              string   `json:"harness_snapshot,omitempty"`
 	Warnings                     []string `json:"warnings,omitempty"`
 }

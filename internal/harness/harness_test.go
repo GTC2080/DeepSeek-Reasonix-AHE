@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"reasonix/internal/harnesspolicy"
 )
 
 func TestInitCreatesExpectedSourceLayoutAndIsIdempotent(t *testing.T) {
@@ -186,6 +188,62 @@ func TestLoadActiveSnapshotReadsPromptOverlayAndToolDescriptions(t *testing.T) {
 	}
 	if got := active.ToolDescriptions["bash"]; got != "Harness bash description." {
 		t.Fatalf("bash tool description = %q, want harness override", got)
+	}
+}
+
+func TestLoadActiveSnapshotReadsExecutableMiddlewarePolicies(t *testing.T) {
+	l := NewLayout(filepath.Join(t.TempDir(), RootDir))
+	if err := l.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(l.SourceDir(), "middleware", "final_answer_readiness.toml"), []byte(`
+version = "middleware.v0.1"
+id = "final_answer_readiness"
+enabled = true
+stage = "final_answer"
+action = "block_and_nudge"
+max_final_answer_blocks = 2
+`), 0o644); err != nil {
+		t.Fatalf("write middleware: %v", err)
+	}
+	lock, err := l.CreateSnapshot(time.Unix(1, 0).UTC())
+	if err != nil {
+		t.Fatalf("CreateSnapshot: %v", err)
+	}
+	if err := l.Activate(lock.SnapshotID); err != nil {
+		t.Fatalf("Activate: %v", err)
+	}
+
+	active, err := l.LoadActive()
+	if err != nil {
+		t.Fatalf("LoadActive: %v", err)
+	}
+	if got := active.Policies.FinalAnswerMaxBlocks(3); got != 2 {
+		t.Fatalf("FinalAnswerMaxBlocks = %d, want 2", got)
+	}
+	if policy, ok := active.Policies.Enabled(harnesspolicy.PolicyFinalAnswerReadiness); !ok || policy.Stage != harnesspolicy.StageFinalAnswer {
+		t.Fatalf("active policy = %+v, %v", policy, ok)
+	}
+}
+
+func TestCreateSnapshotRejectsInvalidMiddlewarePolicy(t *testing.T) {
+	l := NewLayout(filepath.Join(t.TempDir(), RootDir))
+	if err := l.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(l.SourceDir(), "middleware", "bad.toml"), []byte(`
+version = "middleware.v0.1"
+id = "bad"
+enabled = true
+stage = "not_a_stage"
+action = "warn"
+`), 0o644); err != nil {
+		t.Fatalf("write middleware: %v", err)
+	}
+
+	_, err := l.CreateSnapshot(time.Unix(1, 0).UTC())
+	if err == nil || !strings.Contains(err.Error(), "stage") {
+		t.Fatalf("CreateSnapshot err = %v, want invalid stage", err)
 	}
 }
 

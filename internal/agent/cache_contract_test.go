@@ -11,6 +11,7 @@ import (
 
 	"reasonix/internal/agent/testutil"
 	"reasonix/internal/event"
+	"reasonix/internal/harnesspolicy"
 	"reasonix/internal/tool"
 )
 
@@ -75,6 +76,62 @@ func TestRunEmitsCacheContractViolationWarningWithoutStopping(t *testing.T) {
 	}
 	if got, want := len(requests[1].Tools), 2; got != want {
 		t.Fatalf("second request tools = %d, want %d", got, want)
+	}
+}
+
+func TestCacheContractGuardPolicyEmitsDecisionWithoutStopping(t *testing.T) {
+	mp := testutil.NewMock("contract-model",
+		testutil.Turn{Text: "first"},
+		testutil.Turn{Text: "second"},
+	)
+	reg := tool.NewRegistry()
+	reg.Add(contractTool{
+		name:   "read_file",
+		schema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}}}`),
+	})
+	policies := harnesspolicy.PolicySet{Policies: []harnesspolicy.Policy{{
+		Version: harnesspolicy.Version,
+		ID:      harnesspolicy.PolicyCacheContractGuard,
+		Enabled: true,
+		Stage:   harnesspolicy.StageCacheContract,
+		Action:  harnesspolicy.ActionWarn,
+	}}}
+	var decisions []event.MiddlewarePolicyDecisionPayload
+	sink := event.FuncSink(func(e event.Event) {
+		if e.Kind == event.MiddlewarePolicyDecision {
+			decisions = append(decisions, e.MiddlewarePolicyDecision)
+		}
+	})
+	a := New(mp, reg, NewSession("stable system"), Options{
+		Policies:        policies,
+		HarnessSnapshot: "h-0001",
+	}, sink)
+
+	if err := a.Run(context.Background(), "one"); err != nil {
+		t.Fatalf("first Run: %v", err)
+	}
+	reg.Add(contractTool{
+		name:   "write_file",
+		schema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}}}`),
+	})
+	if err := a.Run(context.Background(), "two"); err != nil {
+		t.Fatalf("second Run should continue after policy warning: %v", err)
+	}
+	if len(decisions) != 1 {
+		t.Fatalf("policy decisions = %d, want 1", len(decisions))
+	}
+	decision := decisions[0]
+	if decision.HarnessSnapshot != "h-0001" ||
+		decision.PolicyID != harnesspolicy.PolicyCacheContractGuard ||
+		decision.Stage != string(harnesspolicy.StageCacheContract) ||
+		decision.Action != string(harnesspolicy.ActionWarn) {
+		t.Fatalf("decision = %+v", decision)
+	}
+	if !strings.Contains(decision.Reason, "tool_schema_hash") {
+		t.Fatalf("decision reason = %q, want cache drift reason", decision.Reason)
+	}
+	if len(mp.Requests()) != 2 {
+		t.Fatalf("provider requests = %d, want 2", len(mp.Requests()))
 	}
 }
 

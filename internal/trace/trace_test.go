@@ -246,6 +246,39 @@ func TestSinkMapsCacheContractViolation(t *testing.T) {
 	}
 }
 
+func TestSinkMapsMiddlewarePolicyDecisionWithPreviewRedaction(t *testing.T) {
+	w := &memoryWriter{}
+	s := NewSink(event.Discard, w, Options{
+		RunID:     "run",
+		SessionID: "sess",
+		Mode:      ModePreview,
+		Now:       fixedClock(),
+	})
+
+	s.Emit(event.Event{Kind: event.MiddlewarePolicyDecision, MiddlewarePolicyDecision: event.MiddlewarePolicyDecisionPayload{
+		HarnessSnapshot: "h-0001",
+		PolicyID:        "permission_recovery",
+		Stage:           "pre_tool",
+		Action:          "nudge",
+		Reason:          "blocked with API_KEY=sk-secret1234567890",
+		Turn:            2,
+		Step:            3,
+		ToolName:        "bash",
+	}})
+
+	ev := firstType(t, w.events, "middleware_policy_decision")
+	if ev.Data["policy_id"] != "permission_recovery" || ev.Data["stage"] != "pre_tool" || ev.Data["action"] != "nudge" {
+		t.Fatalf("decision data = %+v", ev.Data)
+	}
+	if ev.Data["reason"] != nil {
+		t.Fatalf("preview mode should not include full reason: %+v", ev.Data)
+	}
+	preview, _ := ev.Data["reason_preview"].(string)
+	if !strings.Contains(preview, "API_KEY=[REDACTED]") || strings.Contains(preview, "sk-secret") {
+		t.Fatalf("reason_preview not redacted: %q", preview)
+	}
+}
+
 func readTraceFile(t *testing.T, path string) []Event {
 	t.Helper()
 	f, err := os.Open(path)
